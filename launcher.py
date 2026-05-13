@@ -91,6 +91,12 @@ UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.18": [
+        "🆕  Offene Positionen: neue Spalte 'Akt. P&L' zeigt unrealisierten Gewinn/Verlust",
+        "✅  Zeitraum-Button 'Alle' umbenannt in 'Gesamt'",
+        "✅  Breakeven-SL: Error 201 behoben (TP-Order wird jetzt zuerst storniert)",
+        "✅  Marktöffnungszeit-Anzeige korrigiert (09:30 statt 09:29)",
+    ],
     "1.0.17": [
         "🆕  P&L GESAMT Karte: Realisiert + Unrealisiert kombiniert mit Aufschlüsselung",
         "🆕  Bot rekonstruiert Spread-Details (Strikes, Credit) aus IB-Positionen beim Start",
