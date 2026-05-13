@@ -798,113 +798,71 @@ class BotLauncher(ctk.CTk):
 
     # ── Auto-Updater ──────────────────────────────────────────────────────────
 
-    def _check_for_updates(self):
-        """Läuft im Hintergrund-Thread — prüft version.txt im GitHub-Repo."""
-        if "DEIN_USERNAME" in UPDATE_BASE_URL:
-            return  # URL noch nicht konfiguriert
-        try:
-            url = f"{UPDATE_BASE_URL}/version.txt"
-            req = urllib.request.Request(url, headers={"User-Agent": "BotLauncher"})
-            with urllib.request.urlopen(req, timeout=6) as r:
-                remote = r.read().decode().strip()
-            if remote != VERSION:
-                self.after(0, lambda: self._show_update_banner(remote))
-        except Exception:
-            pass  # kein Internet oder Repo nicht erreichbar — still ignorieren
-
-    def _show_update_banner(self, remote_version: str):
-        """Blendet den Update-Banner im Hauptthread ein."""
-        self._update_bar.configure(height=44)
-
-        ctk.CTkLabel(
-            self._update_bar,
-            text=f"  📦  Update verfügbar:  v{remote_version}",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#7dd3fc",
-        ).pack(side="left", padx=12, pady=8)
-
-        ctk.CTkButton(
-            self._update_bar,
-            text="Jetzt updaten",
-            width=140, height=30,
-            fg_color="#0369a1", hover_color="#075985",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            command=lambda: self._do_update(remote_version),
-        ).pack(side="left", padx=4)
-
-        ctk.CTkLabel(
-            self._update_bar,
-            text="(Bot wird kurz gestoppt — Neustart danach erforderlich)",
-            font=ctk.CTkFont(size=11),
-            text_color="#64748b",
-        ).pack(side="left", padx=10)
-
-    def _do_update(self, remote_version: str):
-        """Lädt neue Dateien herunter und ersetzt sie."""
-        if self._running:
-            self._stop_bot()
-
-        # Button deaktivieren während Update läuft
-        for w in self._update_bar.winfo_children():
-            if isinstance(w, ctk.CTkButton):
-                w.configure(state="disabled", text="Lädt...")
-
-        threading.Thread(
-            target=self._download_update,
-            args=(remote_version,),
-            daemon=True,
-        ).start()
-
-    def _download_update(self, remote_version: str):
-        errors = []
-
-        # Normale Dateien direkt ersetzen
-        for filename in UPDATE_FILES:
-            try:
-                url = f"{UPDATE_BASE_URL}/{filename}"
-                req = urllib.request.Request(url, headers={"User-Agent": "BotLauncher"})
-                with urllib.request.urlopen(req, timeout=15) as r:
-                    content = r.read()
-                dest = os.path.join(_BASE, filename)
-                # Backup anlegen
-                if os.path.exists(dest):
-                    shutil.copy2(dest, dest + ".bak")
-                with open(dest, "wb") as f:
-                    f.write(content)
-            except Exception as e:
-                errors.append(f"{filename}: {e}")
-
-        # launcher.py → als .new speichern (wird beim nächsten Start aktiviert)
-        try:
-            url = f"{UPDATE_BASE_URL}/launcher.py"
-            req = urllib.request.Request(url, headers={"User-Agent": "BotLauncher"})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                content = r.read()
-            new_path = os.path.join(_BASE, "launcher.py.new")
-            with open(new_path, "wb") as f:
-                f.write(content)
-        except Exception as e:
-            errors.append(f"launcher.py: {e}")
-
-        self.after(0, lambda: self._update_done(remote_version, errors))
-
-    def _update_done(self, remote_version: str, errors: list):
-        # Banner neu beschriften
+    def _update_bar_set(self, text: str, color: str):
+        """Zeigt Text im Update-Banner (Hauptthread)."""
         for w in self._update_bar.winfo_children():
             w.destroy()
-
-        if errors:
-            msg = f"  ❌  Fehler beim Update: {errors[0]}"
-            color = "#f87171"
-        else:
-            msg = f"  ✅  Update auf v{remote_version} abgeschlossen — bitte neu starten!"
-            color = "#4ade80"
-
+        self._update_bar.configure(height=36)
         ctk.CTkLabel(
-            self._update_bar, text=msg,
-            font=ctk.CTkFont(size=13, weight="bold"),
+            self._update_bar, text=text,
+            font=ctk.CTkFont(size=12, weight="bold"),
             text_color=color,
-        ).pack(side="left", padx=12, pady=8)
+        ).pack(side="left", padx=14, pady=6)
+
+    def _update_bar_hide(self):
+        """Blendet den Update-Banner aus."""
+        for w in self._update_bar.winfo_children():
+            w.destroy()
+        self._update_bar.configure(height=0)
+
+    def _check_for_updates(self):
+        """Hintergrund-Thread: prüft GitHub und lädt Update automatisch herunter."""
+        if "DEIN_USERNAME" in UPDATE_BASE_URL:
+            return
+        try:
+            # 1. Version prüfen
+            req = urllib.request.Request(
+                f"{UPDATE_BASE_URL}/version.txt",
+                headers={"User-Agent": "BotLauncher"})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                remote = r.read().decode().strip()
+
+            if remote == VERSION:
+                return  # Aktuell — kein Banner nötig
+
+            # 2. Update gefunden → automatisch herunterladen
+            self.after(0, lambda: self._update_bar_set(
+                f"  ⬇️  Update v{remote} wird heruntergeladen...", "#7dd3fc"))
+
+            errors = []
+            for filename in UPDATE_FILES:
+                try:
+                    r2 = urllib.request.Request(
+                        f"{UPDATE_BASE_URL}/{filename}",
+                        headers={"User-Agent": "BotLauncher"})
+                    with urllib.request.urlopen(r2, timeout=15) as resp:
+                        content = resp.read()
+                    dest = os.path.join(_BASE, filename)
+                    if os.path.exists(dest):
+                        shutil.copy2(dest, dest + ".bak")
+                    with open(dest, "wb") as f:
+                        f.write(content)
+                except Exception as e:
+                    errors.append(f"{filename}: {e}")
+
+            # 3. Ergebnis anzeigen und Banner nach 4 s ausblenden
+            if errors:
+                self.after(0, lambda: self._update_bar_set(
+                    f"  ❌  Update fehlgeschlagen: {errors[0]}", "#f87171"))
+                self.after(6000, lambda: self.after(0, self._update_bar_hide))
+            else:
+                self.after(0, lambda: self._update_bar_set(
+                    f"  ✅  Aktualisiert auf v{remote} — nächster Bot-Start nutzt neue Version",
+                    "#4ade80"))
+                self.after(5000, lambda: self.after(0, self._update_bar_hide))
+
+        except Exception:
+            pass  # kein Internet oder Repo nicht erreichbar
 
         if not errors:
             ctk.CTkButton(
