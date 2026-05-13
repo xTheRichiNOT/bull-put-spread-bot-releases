@@ -91,6 +91,13 @@ UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.17": [
+        "🆕  P&L GESAMT Karte: Realisiert + Unrealisiert kombiniert mit Aufschlüsselung",
+        "🆕  Bot rekonstruiert Spread-Details (Strikes, Credit) aus IB-Positionen beim Start",
+        "🆕  Unrealisiertes P&L wird von Bot berechnet und alle 15s im Dashboard angezeigt",
+        "✅  Positionen werden auch bei geschlossenem Markt in positions.json geschrieben",
+        "✅  MARGIN GEBUNDEN Karte zeigt korrekte Werte auch für ältere Bot-Positionen",
+    ],
     "1.0.16": [
         "🆕  Update-Dialog — bei neuem Update wird gefragt ob jetzt aktualisiert werden soll",
         "🆕  Option 'Immer automatisch updaten' im Update-Dialog (kein Dialog mehr)",
@@ -952,7 +959,7 @@ class BotLauncher(ctk.CTk):
         cards_row = ctk.CTkFrame(parent, fg_color="transparent")
         cards_row.pack(fill="x", padx=10, pady=(10, 6))
 
-        def make_card(parent, title, icon):
+        def make_card(parent, title, icon, sub=False):
             card = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=10)
             card.pack(side="left", fill="both", expand=True, padx=4)
             ctk.CTkLabel(card, text=f"{icon}  {title}",
@@ -961,13 +968,20 @@ class BotLauncher(ctk.CTk):
             val_lbl = ctk.CTkLabel(card, text="—",
                                    font=ctk.CTkFont(size=16, weight="bold"),
                                    text_color=C["text"])
-            val_lbl.pack(anchor="w", padx=10, pady=(2, 8))
+            val_lbl.pack(anchor="w", padx=10, pady=(2, 0 if sub else 8))
+            if sub:
+                sub_lbl = ctk.CTkLabel(card, text="",
+                                       font=ctk.CTkFont(size=9),
+                                       text_color=C["muted"])
+                sub_lbl.pack(anchor="w", padx=10, pady=(0, 8))
+                return val_lbl, sub_lbl
             return val_lbl
 
         self._card_broker  = make_card(cards_row, "BROKER",          "🔌")
         self._card_funds   = make_card(cards_row, "MARGIN GEBUNDEN", "💰")
         self._card_pos     = make_card(cards_row, "POSITIONEN",      "📋")
-        self._card_pnl     = make_card(cards_row, "REALISIERTES P&L","📈")
+        self._card_pnl, self._card_pnl_sub = make_card(
+            cards_row, "P&L GESAMT", "📈", sub=True)
 
         # ── Steuerleiste ──────────────────────────────────────────────────────
         ctrl = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=10)
@@ -1270,6 +1284,11 @@ class BotLauncher(ctk.CTk):
         else:
             self._card_funds.configure(text="$0", text_color=C["muted"])
 
+        # Unrealized P&L aus positions.json (vom Bot in monitor_exits berechnet)
+        upnl_vals = [p.get("unrealized_pnl") for p in open_pos if p.get("unrealized_pnl") is not None]
+        self._unrealized_pnl  = sum(upnl_vals)
+        self._has_unrealized  = len(upnl_vals) > 0
+
         def lbl(parent, text, width, color=C["text"]):
             ctk.CTkLabel(parent, text=text, width=width,
                          font=ctk.CTkFont(size=11), text_color=color,
@@ -1335,13 +1354,29 @@ class BotLauncher(ctk.CTk):
 
         self._draw_chart(trades)
 
-        # P&L-Card immer aktualisieren (alle Trades, nicht nur Filter)
-        total_all = sum(t.get("pnl", 0) for t in all_trades)
-        sign_all  = "+" if total_all >= 0 else ""
-        col_all   = "#4ade80" if total_all >= 0 else "#ef4444"
+        # P&L-Card: Realisiert (history.json) + Unrealisiert (positions.json)
+        total_real   = sum(t.get("pnl", 0) for t in all_trades)
+        unrealized   = getattr(self, '_unrealized_pnl', 0.0)
+        has_unreal   = getattr(self, '_has_unrealized', False)
+        total_combined = total_real + unrealized
+
+        sign_c = "+" if total_combined >= 0 else ""
+        col_c  = "#4ade80" if total_combined >= 0 else "#ef4444"
         self._card_pnl.configure(
-            text=f"{sign_all}${total_all:,.0f}",
-            text_color=col_all)
+            text=f"{sign_c}${total_combined:,.0f}",
+            text_color=col_c)
+
+        if has_unreal:
+            sign_r = "+" if total_real >= 0 else ""
+            sign_u = "+" if unrealized >= 0 else ""
+            self._card_pnl_sub.configure(
+                text=f"Real: {sign_r}${total_real:,.0f}  |  Offen: {sign_u}${unrealized:,.0f}",
+                text_color=C["muted"])
+        else:
+            sign_r = "+" if total_real >= 0 else ""
+            self._card_pnl_sub.configure(
+                text=f"Real: {sign_r}${total_real:,.0f}  |  Offen: —",
+                text_color=C["muted"])
 
         if not trades:
             ctk.CTkLabel(self._history_scroll,

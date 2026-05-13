@@ -266,6 +266,7 @@ def _write_positions_file():
                 'tp_target':       round(entry * 0.5, 2),
                 'status':          info.get('status', 'open'),
                 'opened_at':       info.get('opened_at', ''),
+                'unrealized_pnl':  info.get('unrealized_pnl'),  # None wenn noch nicht berechnet
             })
         with open(_POSITIONS_FILE, 'w') as f:
             json.dump({
@@ -706,6 +707,9 @@ async def monitor_exits(ib=None):
             log(f"  🔒 [{symbol}] Breakeven-SL @ ${be_close:.2f} GTC gesetzt "
                 f"(ID: {be_trade.order.orderId}) | P&L: +${pnl_dollar:.0f}")
 
+        # Unrealized P&L in trade-Info speichern (für Launcher-Anzeige)
+        info['unrealized_pnl'] = round(pnl_dollar, 2)
+
         # P&L Logging
         be_pct  = BREAKEVEN_TRIGGER_PCT * 100
         tp_pct  = TAKE_PROFIT_PCT * 100
@@ -976,13 +980,49 @@ async def run_bot(stop_event: threading.Event = None):
                 _bot_trades[sym] = {'status': 'open', 'entry_per_share': o.order.lmtPrice,
                                     'at_breakeven': False}
                 pre_loaded += 1
-        # Bestehende Options-Positionen sperren (keine Aktien/Shares)
+
+        # Bestehende Options-Positionen: Spread-Details aus IB rekonstruieren
+        # Gruppiere PUT-Legs nach Symbol → short (qty<0) + long (qty>0) = Bull-Put-Spread
+        put_by_sym: dict = {}
         for p in ib.positions():
             sym = p.contract.symbol
-            if sym in WATCHLIST and sym not in _bot_trades and p.contract.secType == 'OPT':
-                _bot_trades[sym] = {'status': 'open', 'entry_per_share': 0,
-                                    'at_breakeven': False}
-                pre_loaded += 1
+            if sym not in WATCHLIST or p.contract.secType != 'OPT':
+                continue
+            if p.contract.right not in ('P', 'PUT'):
+                continue
+            put_by_sym.setdefault(sym, []).append(p)
+
+        for sym, legs in put_by_sym.items():
+            if sym in _bot_trades:
+                continue
+            short_legs = [p for p in legs if p.position < 0]
+            long_legs  = [p for p in legs if p.position > 0]
+            entry: dict = {'status': 'open', 'at_breakeven': False, 'entry_per_share': 0}
+
+            if short_legs:
+                sl = max(short_legs, key=lambda x: x.contract.strike)
+                entry['short_strike'] = sl.contract.strike
+                entry['short_conid']  = sl.contract.conId
+                raw = abs(sl.avgCost)
+                # IB gibt avgCost per-Kontrakt (×100) zurück → pro Share umrechnen
+                entry['entry_per_share'] = raw / 100 if raw > 10 else raw
+                exp = sl.contract.lastTradeDateOrContractMonth
+                try:
+                    entry['expiry_yf'] = datetime.strptime(exp[:8], '%Y%m%d').strftime('%Y-%m-%d')
+                except Exception:
+                    entry['expiry_yf'] = exp
+
+            if long_legs:
+                ll = min(long_legs, key=lambda x: x.contract.strike)
+                entry['long_strike'] = ll.contract.strike
+                entry['long_conid']  = ll.contract.conId
+                raw_paid = abs(ll.avgCost)
+                paid = raw_paid / 100 if raw_paid > 10 else raw_paid
+                entry['entry_per_share'] = max(0, entry.get('entry_per_share', 0) - paid)
+
+            _bot_trades[sym] = entry
+            pre_loaded += 1
+
         if pre_loaded:
             log(f"   {pre_loaded} bestehende Order(s)/Position(en) aus IB geladen — werden nicht dupliziert")
         log("")
@@ -1007,6 +1047,7 @@ async def run_bot(stop_event: threading.Event = None):
 
             # ── Exit-Monitoring läuft immer — auch außerhalb der Handelszeiten ──
             await monitor_exits(ib)
+            _write_positions_file()   # Immer schreiben (auch bei geschlossenem Markt)
 
             if not market_open:
                 wait_sec = seconds_until_market_open()
