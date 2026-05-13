@@ -606,10 +606,12 @@ class BotLauncher(ctk.CTk):
                               segmented_button_unselected_hover_color=C["surface"])
         tabs.pack(fill="both", expand=True, padx=10, pady=(6, 10))
         tabs.add("  Dashboard  ")
+        tabs.add("  Historie  ")
         tabs.add("  Einstellungen  ")
         tabs.add("  IB-Setup Guide  ")
 
         self._build_dashboard(tabs.tab("  Dashboard  "))
+        self._build_history(tabs.tab("  Historie  "))
         self._build_settings(tabs.tab("  Einstellungen  "))
         self._build_guide(tabs.tab("  IB-Setup Guide  "))
 
@@ -682,6 +684,95 @@ class BotLauncher(ctk.CTk):
         tb.tag_configure("dim",    foreground="#2d4a6b")
         tb.tag_configure("white",  foreground="#e2e8f0")
         self._log_lines = 0
+
+    # ── History tab ──────────────────────────────────────────────────────────
+
+    def _build_history(self, parent):
+        parent.configure(fg_color=C["surface"])
+
+        # Header-Zeile
+        hdr = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=8)
+        hdr.pack(fill="x", padx=10, pady=(10, 4))
+
+        for col, w in [("Datum", 130), ("Symbol", 70), ("Expiry", 90),
+                       ("Short", 70), ("Long", 70),
+                       ("Credit", 75), ("Exit", 75), ("P&L", 80), ("Status", 80)]:
+            ctk.CTkLabel(hdr, text=col, width=w,
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=C["accent"]).pack(side="left", padx=4, pady=6)
+
+        ctk.CTkButton(hdr, text="↻ Aktualisieren", width=120, height=26,
+                      fg_color=C["surface"], hover_color=C["header"],
+                      font=ctk.CTkFont(size=11),
+                      command=self._refresh_history).pack(side="right", padx=10)
+
+        # Scrollbarer Bereich für Einträge
+        self._history_scroll = ctk.CTkScrollableFrame(
+            parent, fg_color=C["bg"], corner_radius=8,
+            border_width=1, border_color=C["border"])
+        self._history_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self._history_empty_lbl = ctk.CTkLabel(
+            self._history_scroll,
+            text="Noch keine abgeschlossenen Trades vorhanden.",
+            text_color=C["dim"], font=ctk.CTkFont(size=13))
+        self._history_empty_lbl.pack(pady=40)
+
+        self._refresh_history()
+
+    def _refresh_history(self):
+        for w in self._history_scroll.winfo_children():
+            w.destroy()
+
+        history_file = os.path.join(_BASE, "trade_history.json")
+        trades = []
+        if os.path.exists(history_file):
+            try:
+                with open(history_file) as f:
+                    trades = json.load(f)
+            except Exception:
+                pass
+
+        if not trades:
+            ctk.CTkLabel(self._history_scroll,
+                         text="Noch keine abgeschlossenen Trades vorhanden.",
+                         text_color=C["dim"], font=ctk.CTkFont(size=13)).pack(pady=40)
+            return
+
+        # Gesamt-P&L Zeile
+        total_pnl = sum(t.get("pnl", 0) for t in trades)
+        pnl_color = "#4ade80" if total_pnl >= 0 else "#ef4444"
+        summary = ctk.CTkFrame(self._history_scroll, fg_color=C["surface2"], corner_radius=6)
+        summary.pack(fill="x", padx=4, pady=(6, 10))
+        ctk.CTkLabel(summary,
+                     text=f"  Gesamt P&L:  {'+'if total_pnl>=0 else ''}${total_pnl:,.0f}   |   {len(trades)} Trades",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=pnl_color).pack(side="left", padx=12, pady=6)
+
+        # Trades — neueste zuerst
+        for t in reversed(trades):
+            pnl = t.get("pnl", 0)
+            row_color = "#0d2b1a" if pnl > 0 else ("#2b0d0d" if pnl < 0 else C["surface2"])
+            row = ctk.CTkFrame(self._history_scroll, fg_color=row_color, corner_radius=6)
+            row.pack(fill="x", padx=4, pady=2)
+
+            def lbl(parent, text, width, color="#e2e8f0"):
+                ctk.CTkLabel(parent, text=text, width=width,
+                             font=ctk.CTkFont(size=11), text_color=color,
+                             anchor="w").pack(side="left", padx=4, pady=5)
+
+            lbl(row, t.get("closed_at", "–"), 130)
+            lbl(row, t.get("symbol", "–"), 70, C["accent"])
+            lbl(row, t.get("expiry", "–"), 90)
+            lbl(row, f"${t.get('short_strike', 0):.0f}", 70)
+            lbl(row, f"${t.get('long_strike', 0):.0f}", 70)
+            lbl(row, f"${t.get('entry_per_share', 0):.2f}", 75, "#4ade80")
+            lbl(row, f"${t.get('exit_per_share', 0):.2f}", 75, "#f87171")
+            pnl_str = f"{'+'if pnl>=0 else ''}${pnl:,.0f}"
+            lbl(row, pnl_str, 80, "#4ade80" if pnl >= 0 else "#ef4444")
+            status = t.get("status", "–")
+            status_color = "#4ade80" if status == "done" else "#f59e0b"
+            lbl(row, status, 80, status_color)
 
     # ── Settings tab ─────────────────────────────────────────────────────────
 
