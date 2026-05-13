@@ -2,13 +2,20 @@
 Bull Put Spread Bot — GUI Launcher
 """
 # ── Self-update Bootstrap (nur im frozen .app) ────────────────────────────────
-# Prüft ob eine heruntergeladene launcher.py in Resources liegt und führt
-# diese aus statt der eingebackenen Version. Ermöglicht UI-Updates via GitHub.
+# Prüft ob eine heruntergeladene launcher.py in Application Support liegt und
+# führt diese aus statt der eingebackenen Version. Ermöglicht UI-Updates via
+# GitHub ohne Schreibzugriff auf das (ggf. schreibgeschützte) .app-Bundle.
 import os as _os, sys as _sys
 if getattr(_sys, 'frozen', False) and '--bootstrap' not in _sys.argv:
-    _e = _os.path.dirname(_sys.executable)
-    _r = _os.path.join(_os.path.dirname(_e), "Resources")
-    _b = _r if _os.path.isdir(_r) else _e
+    if _sys.platform == "darwin":
+        _b = _os.path.join(_os.path.expanduser("~"), "Library",
+                           "Application Support", "BullPutSpreadBot")
+    elif _sys.platform == "win32":
+        _b = _os.path.join(_os.environ.get("APPDATA", _os.path.expanduser("~")),
+                           "BullPutSpreadBot")
+    else:
+        _b = _os.path.join(_os.path.expanduser("~"), ".local",
+                           "share", "BullPutSpreadBot")
     _custom = _os.path.join(_b, "launcher.py")
     if _os.path.exists(_custom):
         _sys.argv.append('--bootstrap')
@@ -23,6 +30,7 @@ import threading
 import asyncio
 import queue as queue_module
 import json
+import socket
 import subprocess
 import sys
 import os
@@ -31,15 +39,35 @@ import shutil
 import urllib.request
 from datetime import datetime
 
+# ── Pfade ─────────────────────────────────────────────────────────────────────
+# _BASE       = beschreibbares Verzeichnis (Application Support / Quellordner)
+# _BUNDLE_BASE = schreibgeschützter Bundle-Inhalt (nur im frozen .app)
 if getattr(sys, 'frozen', False):
-    _exec_dir   = os.path.dirname(sys.executable)
-    _resources  = os.path.join(os.path.dirname(_exec_dir), "Resources")
-    _BASE = _resources if os.path.isdir(_resources) else _exec_dir
+    _exec_dir = os.path.dirname(sys.executable)
+    _resources = os.path.join(os.path.dirname(_exec_dir), "Resources")
+    _BUNDLE_BASE = _resources if os.path.isdir(_resources) else _exec_dir
+
+    if sys.platform == "darwin":
+        _BASE = os.path.join(os.path.expanduser("~"), "Library",
+                             "Application Support", "BullPutSpreadBot")
+    elif sys.platform == "win32":
+        _BASE = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                             "BullPutSpreadBot")
+    else:
+        _BASE = os.path.join(os.path.expanduser("~"), ".local",
+                             "share", "BullPutSpreadBot")
+    os.makedirs(_BASE, exist_ok=True)
 else:
-    _BASE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH  = os.path.join(_BASE, "config.json")
-BOT_PATH     = os.path.join(_BASE, "bot.py")
-VERSION_FILE = os.path.join(_BASE, "version.txt")
+    _BUNDLE_BASE = os.path.dirname(os.path.abspath(__file__))
+    _BASE = _BUNDLE_BASE
+
+CONFIG_PATH = os.path.join(_BASE, "config.json")
+BOT_PATH    = os.path.join(_BASE, "bot.py")
+
+# Version: AppSupport (heruntergeladen) hat Vorrang vor Bundle-Version
+_ver_as  = os.path.join(_BASE, "version.txt")
+_ver_bnd = os.path.join(_BUNDLE_BASE, "version.txt")
+VERSION_FILE = _ver_as if os.path.exists(_ver_as) else _ver_bnd
 
 # ── Version & Update-URL ─────────────────────────────────────────────────────
 # Ersetze DEIN_USERNAME und DEIN_REPO mit deinen GitHub-Daten.
@@ -71,12 +99,24 @@ DEFAULT_CONFIG = {
 }
 
 def load_config() -> dict:
+    # Vorhandene Config in AppSupport laden
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH) as f:
                 return {**DEFAULT_CONFIG, **json.load(f)}
         except Exception:
             pass
+    # Beim ersten Start: Bundle-Config migrieren falls vorhanden
+    if _BASE != _BUNDLE_BASE:
+        bundle_cfg = os.path.join(_BUNDLE_BASE, "config.json")
+        if os.path.exists(bundle_cfg):
+            try:
+                with open(bundle_cfg) as f:
+                    data = json.load(f)
+                if data.get("ib_account", "").strip():
+                    return {**DEFAULT_CONFIG, **data}
+            except Exception:
+                pass
     return dict(DEFAULT_CONFIG)
 
 def save_config(cfg: dict):
@@ -905,8 +945,8 @@ class BotLauncher(ctk.CTk):
 
     # ── Auto-Updater ──────────────────────────────────────────────────────────
 
-    def _update_bar_set(self, text: str, color: str):
-        """Zeigt Text im Update-Banner (Hauptthread)."""
+    def _update_bar_set(self, text: str, color: str, progress: float = -1):
+        """Zeigt Text im Update-Banner. progress 0–1 zeigt Fortschrittsbalken."""
         for w in self._update_bar.winfo_children():
             w.destroy()
         self._update_bar.configure(height=36)
@@ -915,6 +955,12 @@ class BotLauncher(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=color,
         ).pack(side="left", padx=14, pady=6)
+        if 0 <= progress <= 1:
+            pb = ctk.CTkProgressBar(self._update_bar, width=180, height=8,
+                                    progress_color=color,
+                                    fg_color=C["surface2"])
+            pb.set(progress)
+            pb.pack(side="left", padx=(0, 12), pady=14)
 
     def _update_bar_hide(self):
         """Blendet den Update-Banner aus."""
@@ -923,7 +969,8 @@ class BotLauncher(ctk.CTk):
         self._update_bar.configure(height=0)
 
     def _check_for_updates(self):
-        """Hintergrund-Thread: prüft GitHub und lädt Update automatisch herunter."""
+        """Hintergrund-Thread: prüft GitHub und lädt Update automatisch herunter.
+        Schreibt Dateien nach Application Support (immer beschreibbar)."""
         if "DEIN_USERNAME" in UPDATE_BASE_URL:
             return
         errors = []
@@ -941,13 +988,14 @@ class BotLauncher(ctk.CTk):
 
             if remote == VERSION:
                 self.after(0, self._update_bar_hide)
-                return  # Aktuell — kein Banner nötig
+                return
 
-            # 2. Update gefunden → automatisch herunterladen
-            self.after(0, lambda: self._update_bar_set(
-                f"  ⬇️  Update v{remote} wird heruntergeladen...", "#7dd3fc"))
-
-            for filename in UPDATE_FILES:
+            # 2. Update gefunden → Dateien einzeln herunterladen mit Fortschritt
+            total = len(UPDATE_FILES)
+            for idx, filename in enumerate(UPDATE_FILES):
+                prog = idx / total
+                self.after(0, lambda t=f"  ⬇️  Update v{remote}  ({filename})", p=prog:
+                           self._update_bar_set(t, "#7dd3fc", progress=p))
                 try:
                     r2 = urllib.request.Request(
                         f"{UPDATE_BASE_URL}/{filename}",
@@ -959,6 +1007,14 @@ class BotLauncher(ctk.CTk):
                         shutil.copy2(dest, dest + ".bak")
                     with open(dest, "wb") as f:
                         f.write(content)
+                    # macOS Quarantäne-Flag entfernen (verhindert Gatekeeper-Probleme)
+                    if sys.platform == "darwin":
+                        try:
+                            subprocess.run(
+                                ["xattr", "-d", "com.apple.quarantine", dest],
+                                capture_output=True, check=False)
+                        except Exception:
+                            pass
                 except Exception as e:
                     errors.append(f"{filename}: {e}")
 
@@ -966,18 +1022,19 @@ class BotLauncher(ctk.CTk):
             if errors:
                 err_msg = errors[0]
                 self.after(0, lambda: self._update_bar_set(
-                    f"  ❌  Update fehlgeschlagen: {err_msg}", "#f87171"))
-                self.after(8000, lambda: self.after(0, self._update_bar_hide))
+                    f"  ❌  Download fehlgeschlagen: {err_msg}", "#f87171"))
+                self.after(10000, lambda: self.after(0, self._update_bar_hide))
             else:
                 self.after(0, lambda: self._update_bar_set(
-                    f"  ✅  Aktualisiert auf v{remote} — App startet neu...", "#4ade80"))
+                    f"  ✅  Update v{remote} installiert — startet neu...",
+                    "#4ade80", progress=1.0))
                 self.after(2500, lambda: self.after(0, self._restart_app))
 
         except Exception as e:
             err_str = str(e)
             self.after(0, lambda: self._update_bar_set(
                 f"  ❌  Update-Prüfung fehlgeschlagen: {err_str}", "#f87171"))
-            self.after(8000, lambda: self.after(0, self._update_bar_hide))
+            self.after(10000, lambda: self.after(0, self._update_bar_hide))
 
     # ── Bot-Steuerung ─────────────────────────────────────────────────────────
 
@@ -1004,6 +1061,16 @@ class BotLauncher(ctk.CTk):
         except ValueError as e:
             self._save_lbl.configure(text=f"❌  Fehler: {e}", text_color="#f87171")
 
+    def _check_tws(self) -> bool:
+        """Prüft ob TWS / IB Gateway auf dem konfigurierten Port erreichbar ist."""
+        host = self.cfg.get("ib_host", "127.0.0.1")
+        port = int(self.cfg.get("ib_port", 7497))
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return True
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            return False
+
     def _start_bot(self):
         if self._running:
             return
@@ -1011,6 +1078,14 @@ class BotLauncher(ctk.CTk):
             self._log_append(
                 "⚠  Bitte zuerst die Account-Nummer in den Einstellungen eintragen!\n"
                 "   (Tab 'Einstellungen' → Account-Nummer → Speichern)\n\n")
+            return
+        port = self.cfg.get("ib_port", 7497)
+        host = self.cfg.get("ib_host", "127.0.0.1")
+        if not self._check_tws():
+            self._log_append(
+                f"⚠  TWS / IB Gateway nicht gefunden auf {host}:{port}\n"
+                f"   → Bitte TWS starten, einloggen und API aktivieren.\n"
+                f"   → Dann Bot erneut starten.\n\n")
             return
         save_config(self.cfg)
         self._running     = True
@@ -1029,9 +1104,11 @@ class BotLauncher(ctk.CTk):
 
     def _run_bot_thread(self):
         try:
+            # Priorität: AppSupport (heruntergeladen) → Bundle (eingebaut) → Import
             bot_file = os.path.join(_BASE, "bot.py")
+            if not os.path.exists(bot_file) and _BASE != _BUNDLE_BASE:
+                bot_file = os.path.join(_BUNDLE_BASE, "bot.py")
             if os.path.exists(bot_file):
-                # Heruntergeladene bot.py von Disk laden (Update-Mechanismus für frozen .app)
                 import importlib.util
                 spec = importlib.util.spec_from_file_location("bot", bot_file)
                 _bot = importlib.util.module_from_spec(spec)
