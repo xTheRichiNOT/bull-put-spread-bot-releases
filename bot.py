@@ -220,19 +220,18 @@ def is_market_open() -> bool:
     close_t = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
     return open_t <= now_et < close_t
 
-def seconds_until_market_open() -> int:
-    """Sekunden bis zur nächsten NYSE-Öffnung (09:30 ET, Mo–Fr)."""
+def seconds_until_market_open() -> tuple:
+    """Gibt (Sekunden, nächste Öffnungszeit ET) bis zur nächsten NYSE-Öffnung zurück."""
     now_et = datetime.now(ZoneInfo('America/New_York'))
-    candidate = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     days_ahead = 0
     while True:
         check = (now_et + timedelta(days=days_ahead)).replace(
             hour=9, minute=30, second=0, microsecond=0)
         if check.weekday() < 5 and check > now_et:
-            candidate = check
             break
         days_ahead += 1
-    return max(60, int((candidate - now_et).total_seconds()))
+    secs = max(60, int((check - now_et).total_seconds()))
+    return secs, check
 
 # Speichert IV vom letzten Scan pro Symbol — für Spike-Erkennung
 _iv_memory: dict = {}
@@ -686,10 +685,13 @@ async def monitor_exits(ib=None):
         pnl_dollar = pnl_share * 100
         pnl_pct    = (pnl_share / entry * 100) if entry > 0 else 0
 
-        # Breakeven: alten SL stornieren und durch Breakeven-Order ersetzen
+        # Breakeven: SL UND TP stornieren, dann neuen Breakeven-SL platzieren
+        # (Error 201 vermeiden: IB erlaubt nicht 2 Closing-BUY-Orders gleichzeitig)
         if pnl_share >= entry * BREAKEVEN_TRIGGER_PCT and not info.get('at_breakeven'):
             info['at_breakeven'] = True
             _cancel_order_by_id(ib, info.get('sl_order_id', 0), symbol, 'SL')
+            _cancel_order_by_id(ib, info.get('tp_order_id', 0), symbol, 'TP')
+            await asyncio.sleep(0.5)   # kurz warten bis Cancel bei IB angekommen
             be_close = round(entry * 1.02, 2)  # entry + 2% Puffer für Slippage
             be_bag = Bag(
                 symbol=symbol, exchange='SMART', currency='USD',
@@ -1050,10 +1052,9 @@ async def run_bot(stop_event: threading.Event = None):
             _write_positions_file()   # Immer schreiben (auch bei geschlossenem Markt)
 
             if not market_open:
-                wait_sec = seconds_until_market_open()
-                open_et  = datetime.now(ZoneInfo('America/New_York')) + timedelta(seconds=wait_sec)
-                h, rem   = divmod(wait_sec, 3600)
-                m        = rem // 60
+                wait_sec, open_et = seconds_until_market_open()
+                h, rem = divmod(wait_sec, 3600)
+                m      = rem // 60
                 log(f"  ⏸️  Außerhalb NYSE-Handelszeiten (09:30–16:00 ET) — kein Scan, kein Trade")
                 log(f"  💤  Markt öffnet in {h}h {m}min  (ET {open_et.strftime('%a %H:%M')})  — Bot schläft")
                 slept = 0
