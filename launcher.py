@@ -974,8 +974,15 @@ class BotLauncher(ctk.CTk):
 
     def _run_bot_thread(self):
         try:
-            import bot as _bot
-            # Redirect bot log queue to our GUI queue
+            bot_file = os.path.join(_BASE, "bot.py")
+            if os.path.exists(bot_file):
+                # Heruntergeladene bot.py von Disk laden (Update-Mechanismus für frozen .app)
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("bot", bot_file)
+                _bot = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(_bot)
+            else:
+                import bot as _bot
             _bot._log_queue = self._queue
             asyncio.run(_bot.run_bot(self._stop_event))
         except Exception as e:
@@ -1067,10 +1074,35 @@ class BotLauncher(ctk.CTk):
 
     def on_closing(self):
         if self._running:
-            self._stop_bot()
-            if self._bot_thread and self._bot_thread.is_alive():
-                self._bot_thread.join(timeout=5)
-        self.destroy()
+            dlg = ctk.CTkToplevel(self)
+            dlg.title("Bot aktiv")
+            dlg.geometry("380x140")
+            dlg.resizable(False, False)
+            dlg.configure(fg_color=C["surface"])
+            dlg.grab_set()
+            dlg.lift()
+            ctk.CTkLabel(
+                dlg,
+                text="⚠️  Der Bot läuft noch.\nWirklich beenden?",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color=C["amber"],
+            ).pack(pady=(24, 12))
+            btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+            btn_frame.pack()
+            def _confirm():
+                dlg.destroy()
+                self._stop_bot()
+                if self._bot_thread and self._bot_thread.is_alive():
+                    self._bot_thread.join(timeout=5)
+                self.destroy()
+            ctk.CTkButton(btn_frame, text="Ja, beenden", width=140, height=34,
+                          fg_color="#dc2626", hover_color="#b91c1c",
+                          command=_confirm).pack(side="left", padx=8)
+            ctk.CTkButton(btn_frame, text="Abbrechen", width=140, height=34,
+                          fg_color=C["surface2"], hover_color=C["header"],
+                          command=dlg.destroy).pack(side="left", padx=8)
+        else:
+            self.destroy()
 
 
 if __name__ == "__main__":

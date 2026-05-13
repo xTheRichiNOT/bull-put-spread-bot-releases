@@ -374,11 +374,17 @@ async def fetch_signal(symbol, preis, iv):
         import yfinance as yf
         ticker = yf.Ticker(symbol)
         today = datetime.now()
-        valid = [e for e in ticker.options
-                 if MIN_DTE <= (datetime.strptime(e, '%Y-%m-%d') - today).days <= MAX_DTE]
+        dte_map = [(e, (datetime.strptime(e, '%Y-%m-%d') - today).days)
+                   for e in ticker.options]
+        valid = [e for e, d in dte_map if MIN_DTE <= d <= MAX_DTE]
         if not valid:
-            return None, None, None
-        expiry_str = valid[0]
+            # Fallback: Expiry am nächsten an MIN_DTE, mindestens 21 DTE
+            candidates = [(e, d) for e, d in dte_map if d >= 21]
+            if not candidates:
+                return None, None, None
+            expiry_str = min(candidates, key=lambda x: abs(x[1] - MIN_DTE))[0]
+        else:
+            expiry_str = valid[0]
         puts = ticker.option_chain(expiry_str).puts
         dte = (datetime.strptime(expiry_str, '%Y-%m-%d') - today).days
         return expiry_str, puts, dte
@@ -1018,9 +1024,16 @@ async def run_bot(stop_event: threading.Event = None):
 
                 # Margin-Check: Available Funds vor jedem Trade-Zyklus prüfen
                 try:
-                    acct = {v.tag: v.value for v in ib.accountValues()
-                            if v.currency in ('USD', '')}
-                    available = float(acct.get('AvailableFunds', acct.get('AvailableFunds-S', 0)))
+                    # USD-Einträge haben Vorrang — currency='' kann 0-Einträge liefern die echte Werte überschreiben
+                    acct_usd = {v.tag: v.value for v in ib.accountValues() if v.currency == 'USD'}
+                    acct_any = {v.tag: v.value for v in ib.accountValues() if v.currency in ('USD', '')}
+                    raw = (acct_usd.get('AvailableFunds')
+                           or acct_usd.get('AvailableFunds-S')
+                           or acct_any.get('AvailableFunds')
+                           or acct_any.get('AvailableFunds-S')
+                           or acct_any.get('NetLiquidation')
+                           or '0')
+                    available = float(raw)
                     log(f"  💰 Verfügbare Mittel: ${available:,.0f}")
                     if available < MIN_AVAILABLE_FUNDS:
                         log(f"  ⛔ Margin-Stop: ${available:,.0f} < ${MIN_AVAILABLE_FUNDS:,} Minimum — kein neuer Trade")
