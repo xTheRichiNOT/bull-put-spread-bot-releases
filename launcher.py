@@ -141,6 +141,7 @@ C = {
     "text":      "#e2e8f0",   # Primärtext
     "muted":     "#4a6080",   # Sekundärtext
     "header":    "#060b17",   # Header-Hintergrund
+    "dim":       "#2d4a6b",   # Sehr gedämpft (leere Listen, Platzhalter)
 }
 
 IB_SETUP_TEXT = """
