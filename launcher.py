@@ -1053,7 +1053,7 @@ class BotLauncher(ctk.CTk):
     def _build_history(self, parent):
         import tkinter as tk
         parent.configure(fg_color=C["surface"])
-        self._current_period = "Alle"
+        self._current_period = "Gesamt"
         self._period_btn_refs: dict[str, ctk.CTkButton] = {}
 
         # ── 1. Offene Positionen (Live) ───────────────────────────────────────
@@ -1091,8 +1091,8 @@ class BotLauncher(ctk.CTk):
                      font=ctk.CTkFont(size=11),
                      text_color=C["muted"]).pack(side="left", padx=(0, 8))
 
-        for label in ["1W", "1M", "3M", "6M", "Alle"]:
-            active = label == "Alle"
+        for label in ["1W", "1M", "3M", "6M", "Gesamt"]:
+            active = label == "Gesamt"
             btn = ctk.CTkButton(
                 period_row, text=label, width=46, height=26,
                 fg_color=C["accent"] if active else C["surface"],
@@ -1153,7 +1153,7 @@ class BotLauncher(ctk.CTk):
     # ── Hilfsmethode: Trades nach Zeitraum filtern ────────────────────────────
 
     def _filter_trades_by_period(self, trades: list) -> list:
-        if self._current_period == "Alle":
+        if self._current_period == "Gesamt":
             return trades
         days = {"1W": 7, "1M": 30, "3M": 90, "6M": 180}.get(self._current_period, 0)
         cutoff = datetime.now() - timedelta(days=days)
