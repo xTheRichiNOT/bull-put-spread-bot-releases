@@ -38,7 +38,7 @@ import os
 import platform
 import shutil
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def _ssl_context():
@@ -91,6 +91,15 @@ UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.14": [
+        "🆕  Live-Ticker: Offene Positionen mit DTE, Credit, TP-Ziel, Status",
+        "🆕  Zeitraum-Filter: 1W / 1M / 3M / 6M / Alle",
+        "🆕  Kumulativer P&L-Chart (Linie über Zeit)",
+        "🆕  Stats: Gesamt P&L, Win-Rate, Ø P&L pro Trade, Gesamt seit Start",
+        "🆕  Auto-Refresh alle 15 Sekunden während Bot läuft",
+        "✅  bot.py schreibt jetzt nach Application Support (gleicher Pfad wie Launcher)",
+        "✅  opened_at Timestamp bei neuen Trades",
+    ],
     "1.0.13": [
         "🆕  Changelog-Fenster nach Updates (dieses Fenster)",
         "✅  Aktuell-Meldung bleibt 4 Sekunden sichtbar",
@@ -870,91 +879,326 @@ class BotLauncher(ctk.CTk):
     # ── History tab ──────────────────────────────────────────────────────────
 
     def _build_history(self, parent):
+        import tkinter as tk
         parent.configure(fg_color=C["surface"])
+        self._current_period = "Alle"
+        self._period_btn_refs: dict[str, ctk.CTkButton] = {}
 
-        # Header-Zeile
-        hdr = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=8)
-        hdr.pack(fill="x", padx=10, pady=(10, 4))
+        # ── 1. Offene Positionen (Live) ───────────────────────────────────────
+        pos_bar = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=8)
+        pos_bar.pack(fill="x", padx=10, pady=(10, 0))
+        ctk.CTkLabel(pos_bar, text="  OFFENE POSITIONEN",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["accent"]).pack(side="left", padx=6, pady=6)
+        self._pos_time_lbl = ctk.CTkLabel(pos_bar, text="",
+                                           font=ctk.CTkFont(size=10),
+                                           text_color=C["muted"])
+        self._pos_time_lbl.pack(side="right", padx=10)
 
+        pos_cols = ctk.CTkFrame(parent, fg_color=C["header"], corner_radius=0)
+        pos_cols.pack(fill="x", padx=10, pady=(2, 0))
+        for col, w in [("Symbol", 70), ("Expiry", 90), ("DTE", 45),
+                       ("Short", 65), ("Long", 65),
+                       ("Credit", 70), ("TP-Ziel", 70), ("Status", 80)]:
+            ctk.CTkLabel(pos_cols, text=col, width=w,
+                         font=ctk.CTkFont(size=10, weight="bold"),
+                         text_color=C["muted"]).pack(side="left", padx=3, pady=4)
+
+        self._pos_scroll = ctk.CTkScrollableFrame(
+            parent, fg_color=C["bg"], corner_radius=0, height=110,
+            border_width=1, border_color=C["border"])
+        self._pos_scroll.pack(fill="x", padx=10, pady=(0, 8))
+
+        # ── 2. Performance + Chart ────────────────────────────────────────────
+        perf = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=8)
+        perf.pack(fill="x", padx=10, pady=(0, 6))
+
+        period_row = ctk.CTkFrame(perf, fg_color="transparent")
+        period_row.pack(fill="x", padx=8, pady=(8, 4))
+        ctk.CTkLabel(period_row, text="Zeitraum:",
+                     font=ctk.CTkFont(size=11),
+                     text_color=C["muted"]).pack(side="left", padx=(0, 8))
+
+        for label in ["1W", "1M", "3M", "6M", "Alle"]:
+            active = label == "Alle"
+            btn = ctk.CTkButton(
+                period_row, text=label, width=46, height=26,
+                fg_color=C["accent"] if active else C["surface"],
+                hover_color="#009e78" if active else C["border"],
+                text_color="#000000" if active else C["text"],
+                font=ctk.CTkFont(size=11),
+                command=lambda l=label: self._set_period(l))
+            btn.pack(side="left", padx=2)
+            self._period_btn_refs[label] = btn
+
+        ctk.CTkButton(period_row, text="↻", width=30, height=26,
+                      fg_color=C["surface"], hover_color=C["border"],
+                      text_color=C["muted"],
+                      command=self._refresh_history).pack(side="right", padx=4)
+
+        stats_row = ctk.CTkFrame(perf, fg_color="transparent")
+        stats_row.pack(fill="x", padx=10, pady=(0, 4))
+        self._lbl_total    = ctk.CTkLabel(stats_row, text="Gesamt: —",
+                                           font=ctk.CTkFont(size=13, weight="bold"),
+                                           text_color=C["text"])
+        self._lbl_total.pack(side="left", padx=(0, 18))
+        self._lbl_trades   = ctk.CTkLabel(stats_row, text="0 Trades",
+                                           font=ctk.CTkFont(size=11),
+                                           text_color=C["muted"])
+        self._lbl_trades.pack(side="left", padx=(0, 18))
+        self._lbl_winrate  = ctk.CTkLabel(stats_row, text="Win: —",
+                                           font=ctk.CTkFont(size=11),
+                                           text_color=C["muted"])
+        self._lbl_winrate.pack(side="left", padx=(0, 18))
+        self._lbl_avg      = ctk.CTkLabel(stats_row, text="⌀ P&L: —",
+                                           font=ctk.CTkFont(size=11),
+                                           text_color=C["muted"])
+        self._lbl_avg.pack(side="left")
+
+        self._chart_canvas = tk.Canvas(perf, height=95,
+                                        bg=C["bg"], highlightthickness=0)
+        self._chart_canvas.pack(fill="x", padx=8, pady=(2, 8))
+
+        # ── 3. Trade-Tabelle ──────────────────────────────────────────────────
+        hist_hdr = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=0)
+        hist_hdr.pack(fill="x", padx=10, pady=(0, 0))
         for col, w in [("Datum", 130), ("Symbol", 70), ("Expiry", 90),
-                       ("Short", 70), ("Long", 70),
-                       ("Credit", 75), ("Exit", 75), ("P&L", 80), ("Status", 80)]:
-            ctk.CTkLabel(hdr, text=col, width=w,
+                       ("Short", 65), ("Long", 65),
+                       ("Credit", 70), ("Exit", 70), ("P&L", 75), ("Status", 70)]:
+            ctk.CTkLabel(hist_hdr, text=col, width=w,
                          font=ctk.CTkFont(size=11, weight="bold"),
-                         text_color=C["accent"]).pack(side="left", padx=4, pady=6)
+                         text_color=C["accent"]).pack(side="left", padx=3, pady=6)
 
-        ctk.CTkButton(hdr, text="↻ Aktualisieren", width=120, height=26,
-                      fg_color=C["surface"], hover_color=C["header"],
-                      font=ctk.CTkFont(size=11),
-                      command=self._refresh_history).pack(side="right", padx=10)
-
-        # Scrollbarer Bereich für Einträge
         self._history_scroll = ctk.CTkScrollableFrame(
-            parent, fg_color=C["bg"], corner_radius=8,
+            parent, fg_color=C["bg"], corner_radius=0,
             border_width=1, border_color=C["border"])
         self._history_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        self._history_empty_lbl = ctk.CTkLabel(
-            self._history_scroll,
-            text="Noch keine abgeschlossenen Trades vorhanden.",
-            text_color=C["dim"], font=ctk.CTkFont(size=13))
-        self._history_empty_lbl.pack(pady=40)
-
         self._refresh_history()
+        self._refresh_positions()
+        self._auto_refresh_history()
+
+    # ── Hilfsmethode: Trades nach Zeitraum filtern ────────────────────────────
+
+    def _filter_trades_by_period(self, trades: list) -> list:
+        if self._current_period == "Alle":
+            return trades
+        days = {"1W": 7, "1M": 30, "3M": 90, "6M": 180}.get(self._current_period, 0)
+        cutoff = datetime.now() - timedelta(days=days)
+        result = []
+        for t in trades:
+            try:
+                closed = datetime.strptime(t.get("closed_at", ""), "%Y-%m-%d %H:%M")
+                if closed >= cutoff:
+                    result.append(t)
+            except Exception:
+                pass
+        return result
+
+    def _set_period(self, period: str):
+        self._current_period = period
+        for label, btn in self._period_btn_refs.items():
+            active = label == period
+            btn.configure(
+                fg_color=C["accent"] if active else C["surface"],
+                hover_color="#009e78" if active else C["border"],
+                text_color="#000000" if active else C["text"])
+        self._refresh_history()
+
+    # ── P&L-Chart auf Canvas zeichnen ─────────────────────────────────────────
+
+    def _draw_chart(self, trades: list):
+        import tkinter as tk
+        c = self._chart_canvas
+        c.update_idletasks()
+        w = c.winfo_width() or 500
+        h = c.winfo_height() or 95
+        c.delete("all")
+
+        if not trades:
+            c.create_text(w // 2, h // 2, text="Keine Trades im Zeitraum",
+                          fill=C["dim"], font=("Courier", 10))
+            return
+
+        sorted_t = sorted(trades, key=lambda t: t.get("closed_at", ""))
+        cumulative, running = [], 0.0
+        for t in sorted_t:
+            running += t.get("pnl", 0)
+            cumulative.append(running)
+
+        if len(cumulative) < 1:
+            return
+
+        pad = 28
+        cw, ch = w - 2 * pad, h - 16
+        max_abs = max(abs(v) for v in cumulative) or 1
+        zero_y = pad // 2 + ch * max_abs / (2 * max_abs)
+
+        def to_xy(i, val):
+            x = pad + (i / max(len(cumulative) - 1, 1)) * cw
+            y = (h - pad // 2) - ((val + max_abs) / (2 * max_abs)) * ch
+            return x, y
+
+        # Nulllinie
+        c.create_line(pad, zero_y, w - pad, zero_y,
+                      fill=C["border"], width=1, dash=(4, 4))
+
+        # Linie + Füllfläche
+        pts = [to_xy(i, v) for i, v in enumerate(cumulative)]
+        if len(pts) >= 2:
+            flat = [coord for p in pts for coord in p]
+            c.create_line(flat, fill=C["accent"], width=2, smooth=True)
+
+        # Punkte
+        for i, (x, y) in enumerate(pts):
+            col = "#22c55e" if cumulative[i] >= 0 else "#ef4444"
+            c.create_oval(x - 3, y - 3, x + 3, y + 3, fill=col, outline="")
+
+        # Endwert-Label
+        final = cumulative[-1]
+        sign = "+" if final >= 0 else ""
+        col = "#4ade80" if final >= 0 else "#ef4444"
+        c.create_text(w - pad + 2, pts[-1][1],
+                      text=f"{sign}${final:,.0f}",
+                      fill=col, font=("Courier", 9), anchor="w")
+
+        # Gesamt seit Anfang (alle Trades, nicht nur Filter)
+        history_file = os.path.join(_BASE, "trade_history.json")
+        try:
+            with open(history_file) as f:
+                all_trades = json.load(f)
+            total_all = sum(t.get("pnl", 0) for t in all_trades)
+            sign_all = "+" if total_all >= 0 else ""
+            c.create_text(pad, 8,
+                          text=f"Gesamt seit Start: {sign_all}${total_all:,.0f}",
+                          fill=C["muted"], font=("Courier", 9), anchor="w")
+        except Exception:
+            pass
+
+    # ── Live-Positionen aktualisieren ─────────────────────────────────────────
+
+    def _refresh_positions(self):
+        for w in self._pos_scroll.winfo_children():
+            w.destroy()
+
+        pos_file = os.path.join(_BASE, "positions.json")
+        positions, updated = [], ""
+        if os.path.exists(pos_file):
+            try:
+                with open(pos_file) as f:
+                    data = json.load(f)
+                positions = data.get("positions", [])
+                updated   = data.get("updated", "")
+            except Exception:
+                pass
+
+        if updated:
+            self._pos_time_lbl.configure(text=f"Stand: {updated}  ")
+
+        def lbl(parent, text, width, color=C["text"]):
+            ctk.CTkLabel(parent, text=text, width=width,
+                         font=ctk.CTkFont(size=11), text_color=color,
+                         anchor="w").pack(side="left", padx=3, pady=4)
+
+        if not positions:
+            ctk.CTkLabel(self._pos_scroll,
+                         text="  Keine offenen Positionen.",
+                         text_color=C["dim"],
+                         font=ctk.CTkFont(size=12)).pack(pady=16)
+            return
+
+        for p in positions:
+            status = p.get("status", "open")
+            row_col = "#0d2416" if status == "open" else "#1a1a08"
+            row = ctk.CTkFrame(self._pos_scroll, fg_color=row_col, corner_radius=5)
+            row.pack(fill="x", padx=4, pady=2)
+            lbl(row, p.get("symbol", "–"), 70, C["accent"])
+            lbl(row, p.get("expiry", "–"), 90)
+            dte = p.get("dte", 0)
+            dte_col = "#ef4444" if dte <= 7 else ("#f59e0b" if dte <= 21 else C["text"])
+            lbl(row, f"{dte}d", 45, dte_col)
+            lbl(row, f"${p.get('short_strike', 0):.0f}", 65)
+            lbl(row, f"${p.get('long_strike', 0):.0f}", 65)
+            lbl(row, f"${p.get('entry_per_share', 0):.2f}", 70, "#4ade80")
+            lbl(row, f"${p.get('tp_target', 0):.2f}", 70, "#60a5fa")
+            status_col = "#4ade80" if status == "open" else "#f59e0b"
+            status_txt = "Aktiv" if status == "open" else "Schließt"
+            lbl(row, status_txt, 80, status_col)
+
+    # ── Trade-History aktualisieren ───────────────────────────────────────────
 
     def _refresh_history(self):
         for w in self._history_scroll.winfo_children():
             w.destroy()
 
         history_file = os.path.join(_BASE, "trade_history.json")
-        trades = []
+        all_trades = []
         if os.path.exists(history_file):
             try:
                 with open(history_file) as f:
-                    trades = json.load(f)
+                    all_trades = json.load(f)
             except Exception:
                 pass
 
+        trades = self._filter_trades_by_period(all_trades)
+
+        # Stats aktualisieren
+        total_pnl = sum(t.get("pnl", 0) for t in trades)
+        wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+        win_rate = (wins / len(trades) * 100) if trades else 0
+        avg_pnl = (total_pnl / len(trades)) if trades else 0
+        pnl_col = "#4ade80" if total_pnl >= 0 else "#ef4444"
+        sign = "+" if total_pnl >= 0 else ""
+
+        self._lbl_total.configure(
+            text=f"Gesamt: {sign}${total_pnl:,.0f}", text_color=pnl_col)
+        self._lbl_trades.configure(text=f"{len(trades)} Trades")
+        self._lbl_winrate.configure(
+            text=f"Win: {win_rate:.0f}%" if trades else "Win: —")
+        self._lbl_avg.configure(
+            text=f"⌀ ${avg_pnl:+.0f}" if trades else "⌀ P&L: —")
+
+        self._draw_chart(trades)
+
         if not trades:
             ctk.CTkLabel(self._history_scroll,
-                         text="Noch keine abgeschlossenen Trades vorhanden.",
-                         text_color=C["dim"], font=ctk.CTkFont(size=13)).pack(pady=40)
+                         text="Keine abgeschlossenen Trades im gewählten Zeitraum.",
+                         text_color=C["dim"],
+                         font=ctk.CTkFont(size=12)).pack(pady=24)
             return
 
-        # Gesamt-P&L Zeile
-        total_pnl = sum(t.get("pnl", 0) for t in trades)
-        pnl_color = "#4ade80" if total_pnl >= 0 else "#ef4444"
-        summary = ctk.CTkFrame(self._history_scroll, fg_color=C["surface2"], corner_radius=6)
-        summary.pack(fill="x", padx=4, pady=(6, 10))
-        ctk.CTkLabel(summary,
-                     text=f"  Gesamt P&L:  {'+'if total_pnl>=0 else ''}${total_pnl:,.0f}   |   {len(trades)} Trades",
-                     font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color=pnl_color).pack(side="left", padx=12, pady=6)
+        def lbl(parent, text, width, color=C["text"]):
+            ctk.CTkLabel(parent, text=text, width=width,
+                         font=ctk.CTkFont(size=11), text_color=color,
+                         anchor="w").pack(side="left", padx=3, pady=5)
 
-        # Trades — neueste zuerst
         for t in reversed(trades):
             pnl = t.get("pnl", 0)
-            row_color = "#0d2b1a" if pnl > 0 else ("#2b0d0d" if pnl < 0 else C["surface2"])
-            row = ctk.CTkFrame(self._history_scroll, fg_color=row_color, corner_radius=6)
+            row_col = "#0d2b1a" if pnl > 0 else ("#2b0d0d" if pnl < 0 else C["surface2"])
+            row = ctk.CTkFrame(self._history_scroll, fg_color=row_col, corner_radius=5)
             row.pack(fill="x", padx=4, pady=2)
-
-            def lbl(parent, text, width, color="#e2e8f0"):
-                ctk.CTkLabel(parent, text=text, width=width,
-                             font=ctk.CTkFont(size=11), text_color=color,
-                             anchor="w").pack(side="left", padx=4, pady=5)
-
             lbl(row, t.get("closed_at", "–"), 130)
             lbl(row, t.get("symbol", "–"), 70, C["accent"])
             lbl(row, t.get("expiry", "–"), 90)
-            lbl(row, f"${t.get('short_strike', 0):.0f}", 70)
-            lbl(row, f"${t.get('long_strike', 0):.0f}", 70)
-            lbl(row, f"${t.get('entry_per_share', 0):.2f}", 75, "#4ade80")
-            lbl(row, f"${t.get('exit_per_share', 0):.2f}", 75, "#f87171")
+            lbl(row, f"${t.get('short_strike', 0):.0f}", 65)
+            lbl(row, f"${t.get('long_strike', 0):.0f}", 65)
+            lbl(row, f"${t.get('entry_per_share', 0):.2f}", 70, "#4ade80")
+            lbl(row, f"${t.get('exit_per_share', 0):.2f}", 70, "#f87171")
             pnl_str = f"{'+'if pnl>=0 else ''}${pnl:,.0f}"
-            lbl(row, pnl_str, 80, "#4ade80" if pnl >= 0 else "#ef4444")
+            lbl(row, pnl_str, 75, "#4ade80" if pnl >= 0 else "#ef4444")
             status = t.get("status", "–")
-            status_color = "#4ade80" if status == "done" else "#f59e0b"
-            lbl(row, status, 80, status_color)
+            lbl(row, status, 70, "#4ade80" if status == "done" else "#f59e0b")
+
+    # ── Auto-Refresh alle 15s ─────────────────────────────────────────────────
+
+    def _auto_refresh_history(self):
+        try:
+            self._refresh_positions()
+            if self._running:
+                self._refresh_history()
+        except Exception:
+            pass
+        self.after(15000, self._auto_refresh_history)
 
     # ── Settings tab ─────────────────────────────────────────────────────────
 

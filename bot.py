@@ -10,11 +10,18 @@ import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-# Writable base dir: next to .exe/.app when bundled, next to bot.py in dev
+# Writable base dir: Application Support (frozen) or next to bot.py (dev)
 if getattr(sys, 'frozen', False):
-    _exec_dir  = os.path.dirname(sys.executable)
-    _resources = os.path.join(os.path.dirname(_exec_dir), "Resources")
-    _BASE = _resources if os.path.isdir(_resources) else _exec_dir
+    if sys.platform == "darwin":
+        _BASE = os.path.join(os.path.expanduser("~"), "Library",
+                             "Application Support", "BullPutSpreadBot")
+    elif sys.platform == "win32":
+        _BASE = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                             "BullPutSpreadBot")
+    else:
+        _BASE = os.path.join(os.path.expanduser("~"), ".local",
+                             "share", "BullPutSpreadBot")
+    os.makedirs(_BASE, exist_ok=True)
 else:
     _BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -218,8 +225,41 @@ _iv_memory: dict = {}
 # Speichert aktive Bot-Trades für Exit-Monitoring
 _bot_trades: dict = {}
 
-_STATE_FILE   = os.path.join(_BASE, '.bot_state.json')
-_HISTORY_FILE = os.path.join(_BASE, 'trade_history.json')
+_STATE_FILE     = os.path.join(_BASE, '.bot_state.json')
+_HISTORY_FILE   = os.path.join(_BASE, 'trade_history.json')
+_POSITIONS_FILE = os.path.join(_BASE, 'positions.json')
+
+def _write_positions_file():
+    """Schreibt offene Positionen für den Launcher (Live-Anzeige im Historie-Tab)."""
+    try:
+        positions = []
+        for sym, info in _bot_trades.items():
+            if info.get('status') in ('done', 'failed'):
+                continue
+            try:
+                exp_date = datetime.strptime(info.get('expiry_yf', ''), '%Y-%m-%d')
+                dte = max(0, (exp_date.date() - datetime.now().date()).days)
+            except Exception:
+                dte = 0
+            entry = info.get('entry_per_share', 0.0)
+            positions.append({
+                'symbol':          sym,
+                'expiry':          info.get('expiry_yf', ''),
+                'dte':             dte,
+                'short_strike':    info.get('short_strike', 0),
+                'long_strike':     info.get('long_strike', 0),
+                'entry_per_share': round(entry, 2),
+                'tp_target':       round(entry * 0.5, 2),
+                'status':          info.get('status', 'open'),
+                'opened_at':       info.get('opened_at', ''),
+            })
+        with open(_POSITIONS_FILE, 'w') as f:
+            json.dump({
+                'updated': datetime.now().strftime('%H:%M:%S'),
+                'positions': positions,
+            }, f, indent=2)
+    except Exception:
+        pass
 
 def _append_history(symbol: str, info: dict, exit_per_share: float = 0.0):
     """Hängt einen abgeschlossenen Trade an trade_history.json an."""
@@ -819,6 +859,7 @@ async def place_order(ib, sig):
             'at_breakeven':    False,
             'tp_order_id':     0,
             'sl_order_id':     0,
+            'opened_at':       datetime.now().strftime('%Y-%m-%d %H:%M'),
         }
 
         # ── Bracket-Order: Entry + TP + SL, alle GTC ─────────────────────────
@@ -1126,6 +1167,9 @@ async def run_bot(stop_event: threading.Event = None):
             for sig in selected:
                 log(f"\n  🚀 Trade: {sig['symbol']} | Score {sig['score']:.3f}")
                 await place_order(ib, sig)
+
+            # Positionen für Launcher-Anzeige schreiben
+            _write_positions_file()
 
             log(f"\n  Pause {SCAN_INTERVALL}s ...")
             for _ in range(SCAN_INTERVALL):
