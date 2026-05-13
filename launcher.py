@@ -515,7 +515,7 @@ class BotLauncher(ctk.CTk):
             self._icon_ref = photo          # prevent GC
             if sys.platform == "darwin":
                 try:
-                    import AppKit
+                    import AppKit  # type: ignore[import-untyped]
                     ns_img = AppKit.NSImage.alloc().initWithContentsOfFile_(path)
                     AppKit.NSApp.setApplicationIconImage_(ns_img)
                 except Exception:
@@ -926,22 +926,27 @@ class BotLauncher(ctk.CTk):
         """Hintergrund-Thread: prüft GitHub und lädt Update automatisch herunter."""
         if "DEIN_USERNAME" in UPDATE_BASE_URL:
             return
+        errors = []
         try:
+            # Sofort anzeigen dass geprüft wird
+            self.after(0, lambda: self._update_bar_set(
+                "  🔄  Prüfe auf Updates...", "#7dd3fc"))
+
             # 1. Version prüfen
             req = urllib.request.Request(
                 f"{UPDATE_BASE_URL}/version.txt",
                 headers={"User-Agent": "BotLauncher"})
-            with urllib.request.urlopen(req, timeout=6) as r:
+            with urllib.request.urlopen(req, timeout=8) as r:
                 remote = r.read().decode().strip()
 
             if remote == VERSION:
+                self.after(0, self._update_bar_hide)
                 return  # Aktuell — kein Banner nötig
 
             # 2. Update gefunden → automatisch herunterladen
             self.after(0, lambda: self._update_bar_set(
                 f"  ⬇️  Update v{remote} wird heruntergeladen...", "#7dd3fc"))
 
-            errors = []
             for filename in UPDATE_FILES:
                 try:
                     r2 = urllib.request.Request(
@@ -957,36 +962,22 @@ class BotLauncher(ctk.CTk):
                 except Exception as e:
                     errors.append(f"{filename}: {e}")
 
-            # 3. Ergebnis anzeigen und Banner nach 4 s ausblenden
+            # 3. Ergebnis anzeigen
             if errors:
+                err_msg = errors[0]
                 self.after(0, lambda: self._update_bar_set(
-                    f"  ❌  Update fehlgeschlagen: {errors[0]}", "#f87171"))
-                self.after(6000, lambda: self.after(0, self._update_bar_hide))
+                    f"  ❌  Update fehlgeschlagen: {err_msg}", "#f87171"))
+                self.after(8000, lambda: self.after(0, self._update_bar_hide))
             else:
                 self.after(0, lambda: self._update_bar_set(
                     f"  ✅  Aktualisiert auf v{remote} — App startet neu...", "#4ade80"))
                 self.after(2500, lambda: self.after(0, self._restart_app))
 
-        except Exception:
-            pass  # kein Internet oder Repo nicht erreichbar
-
-        if not errors:
-            ctk.CTkButton(
-                self._update_bar,
-                text="Jetzt neu starten",
-                width=160, height=30,
-                fg_color="#166534", hover_color="#14532d",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                command=self._restart_app,
-            ).pack(side="left", padx=4)
-
-    def _restart_app(self):
-        """Startet den Launcher neu — aktiviert launcher.py.new falls vorhanden."""
-        self.on_closing()
-        if platform.system() == "Windows":
-            subprocess.Popen([sys.executable] + sys.argv)
-        else:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            err_str = str(e)
+            self.after(0, lambda: self._update_bar_set(
+                f"  ❌  Update-Prüfung fehlgeschlagen: {err_str}", "#f87171"))
+            self.after(8000, lambda: self.after(0, self._update_bar_hide))
 
     # ── Bot-Steuerung ─────────────────────────────────────────────────────────
 
