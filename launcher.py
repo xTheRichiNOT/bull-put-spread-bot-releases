@@ -964,10 +964,10 @@ class BotLauncher(ctk.CTk):
             val_lbl.pack(anchor="w", padx=10, pady=(2, 8))
             return val_lbl
 
-        self._card_broker  = make_card(cards_row, "BROKER",      "🔌")
-        self._card_funds   = make_card(cards_row, "KAPITAL",     "💰")
-        self._card_pos     = make_card(cards_row, "POSITIONEN",  "📋")
-        self._card_pnl     = make_card(cards_row, "GESAMT P&L",  "📈")
+        self._card_broker  = make_card(cards_row, "BROKER",          "🔌")
+        self._card_funds   = make_card(cards_row, "MARGIN GEBUNDEN", "💰")
+        self._card_pos     = make_card(cards_row, "POSITIONEN",      "📋")
+        self._card_pnl     = make_card(cards_row, "REALISIERTES P&L","📈")
 
         # ── Steuerleiste ──────────────────────────────────────────────────────
         ctrl = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=10)
@@ -1253,6 +1253,23 @@ class BotLauncher(ctk.CTk):
         if updated:
             self._pos_time_lbl.configure(text=f"Stand: {updated}  ")
 
+        # ── Metric-Karten aus positions.json befüllen ─────────────────────────
+        open_pos = [p for p in positions if p.get("status") != "done"]
+        self._card_pos.configure(
+            text=str(len(open_pos)) if open_pos else "0",
+            text_color=C["accent"] if open_pos else C["muted"])
+
+        margin_used = sum(
+            max(0, (p.get("short_strike", 0) - p.get("long_strike", 0)
+                    - p.get("entry_per_share", 0))) * 100
+            for p in open_pos)
+        if open_pos:
+            self._card_funds.configure(
+                text=f"${margin_used:,.0f}",
+                text_color=C["amber"])
+        else:
+            self._card_funds.configure(text="$0", text_color=C["muted"])
+
         def lbl(parent, text, width, color=C["text"]):
             ctk.CTkLabel(parent, text=text, width=width,
                          font=ctk.CTkFont(size=11), text_color=color,
@@ -1318,6 +1335,14 @@ class BotLauncher(ctk.CTk):
 
         self._draw_chart(trades)
 
+        # P&L-Card immer aktualisieren (alle Trades, nicht nur Filter)
+        total_all = sum(t.get("pnl", 0) for t in all_trades)
+        sign_all  = "+" if total_all >= 0 else ""
+        col_all   = "#4ade80" if total_all >= 0 else "#ef4444"
+        self._card_pnl.configure(
+            text=f"{sign_all}${total_all:,.0f}",
+            text_color=col_all)
+
         if not trades:
             ctk.CTkLabel(self._history_scroll,
                          text="Keine abgeschlossenen Trades im gewählten Zeitraum.",
@@ -1352,8 +1377,7 @@ class BotLauncher(ctk.CTk):
     def _auto_refresh_history(self):
         try:
             self._refresh_positions()
-            if self._running:
-                self._refresh_history()
+            self._refresh_history()
         except Exception:
             pass
         self.after(15000, self._auto_refresh_history)
@@ -1809,29 +1833,10 @@ class BotLauncher(ctk.CTk):
             self._sb_broker_lbl.configure(text="🔴  Broker: Getrennt",
                                            text_color=C["red"])
             self._card_broker.configure(text="Getrennt", text_color=C["red"])
-        # Verfügbare Mittel
+        # Verfügbare Mittel → nur Sidebar-Label (Karten werden aus positions.json befüllt)
         m = re.search(r'Verfügbare Mittel:\s*\$([\d,]+)', text)
         if m:
-            funds = m.group(1)
-            self._sb_funds_lbl.configure(text=f"${funds}")
-            self._card_funds.configure(text=f"${funds}", text_color=C["text"])
-        # Offene Positionen
-        m2 = re.search(r'(\d+)\s+(?:aktive|offene|bestehende).*[Pp]osition', text)
-        if m2:
-            self._card_pos.configure(text=m2.group(1), text_color=C["accent"])
-        # Gesamt P&L aus history.json aktualisieren
-        try:
-            hf = os.path.join(_BASE, "trade_history.json")
-            if os.path.exists(hf):
-                with open(hf) as f:
-                    trades = json.load(f)
-                total = sum(t.get("pnl", 0) for t in trades)
-                sign = "+" if total >= 0 else ""
-                col = "#4ade80" if total >= 0 else "#ef4444"
-                self._card_pnl.configure(
-                    text=f"{sign}${total:,.0f}", text_color=col)
-        except Exception:
-            pass
+            self._sb_funds_lbl.configure(text=f"${m.group(1)}")
 
     def _pulse(self):
         if not self._running:
