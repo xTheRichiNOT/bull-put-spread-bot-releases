@@ -91,6 +91,12 @@ UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.16": [
+        "🆕  Update-Dialog — bei neuem Update wird gefragt ob jetzt aktualisiert werden soll",
+        "🆕  Option 'Immer automatisch updaten' im Update-Dialog (kein Dialog mehr)",
+        "🆕  Einstellungen: Sicherer Modus — Haken sperrt alle Felder gegen Änderungen",
+        "🆕  Einstellungen: 'Standardwerte zurücksetzen' Button",
+    ],
     "1.0.15": [
         "🆕  Sidebar-Navigation (Dashboard / Portfolio / Einstellungen / IB-Setup)",
         "🆕  4 Metric-Cards: Broker-Status, Kapital, Positionen, Gesamt P&L",
@@ -399,6 +405,77 @@ class ChangelogDialog(ctk.CTkToplevel):
 
     def _close(self):
         self._on_done(self._no_more.get())
+        self.destroy()
+
+
+class UpdateDialog(ctk.CTkToplevel):
+    """Fragt den Benutzer ob ein gefundenes Update installiert werden soll."""
+
+    def __init__(self, parent: ctk.CTk, current_v: str, remote_v: str, on_result):
+        """on_result(do_update: bool, always_auto: bool)"""
+        super().__init__(parent)
+        self.title("Update verfügbar")
+        self.geometry("440x270")
+        self.resizable(False, False)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+        self._on_result   = on_result
+        self._always_auto = ctk.BooleanVar(value=False)
+        self._build(current_v, remote_v)
+
+    def _build(self, current_v: str, remote_v: str):
+        hdr = ctk.CTkFrame(self, height=54, corner_radius=0, fg_color=C["header"])
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="  ⬡  UPDATE VERFÜGBAR",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=C["accent"]).pack(side="left", padx=12, pady=14)
+
+        body = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=0)
+        body.pack(fill="both", expand=True)
+
+        ctk.CTkLabel(body,
+                     text=f"v{current_v}   →   v{remote_v}",
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color=C["accent"]).pack(pady=(22, 6))
+
+        ctk.CTkLabel(body,
+                     text="Eine neue Version ist verfügbar.\nMöchtest du jetzt updaten?",
+                     font=ctk.CTkFont(size=12),
+                     text_color=C["text"],
+                     justify="center").pack(pady=(0, 16))
+
+        ctk.CTkCheckBox(body,
+                        text="Immer automatisch updaten (kein Dialog mehr)",
+                        variable=self._always_auto,
+                        font=ctk.CTkFont(size=11),
+                        text_color=C["muted"],
+                        fg_color=C["accent"], hover_color="#009e78",
+                        checkmark_color="#000000").pack(pady=(0, 4))
+
+        foot = ctk.CTkFrame(self, height=56, corner_radius=0, fg_color=C["surface2"])
+        foot.pack(fill="x")
+        foot.pack_propagate(False)
+
+        ctk.CTkButton(foot, text="Später", width=100, height=34,
+                      fg_color=C["surface"], hover_color=C["border"],
+                      text_color=C["muted"],
+                      font=ctk.CTkFont(size=12),
+                      command=self._skip).pack(side="left", padx=16, pady=11)
+
+        ctk.CTkButton(foot, text="Jetzt updaten  ↓", width=160, height=34,
+                      fg_color=C["accent"], hover_color="#009e78",
+                      text_color="#000000",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=self._do_update).pack(side="right", padx=16, pady=11)
+
+    def _do_update(self):
+        self._on_result(True, self._always_auto.get())
+        self.destroy()
+
+    def _skip(self):
+        self._on_result(False, self._always_auto.get())
         self.destroy()
 
 
@@ -1285,6 +1362,32 @@ class BotLauncher(ctk.CTk):
 
     def _build_settings(self, parent):
         parent.configure(fg_color=C["surface"])
+
+        # ── Sicherer-Modus Header ─────────────────────────────────────────────
+        self._safe_mode_var = ctk.BooleanVar(value=False)
+        self._input_widgets: list = []
+
+        safe_bar = ctk.CTkFrame(parent, fg_color=C["surface2"],
+                                corner_radius=0, height=44)
+        safe_bar.pack(fill="x")
+        safe_bar.pack_propagate(False)
+
+        self._safe_mode_lbl = ctk.CTkLabel(
+            safe_bar,
+            text="🔓  Einstellungen bearbeitbar",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=C["green"])
+        self._safe_mode_lbl.pack(side="left", padx=14)
+
+        ctk.CTkCheckBox(safe_bar, text="Sicherer Modus",
+                        variable=self._safe_mode_var,
+                        font=ctk.CTkFont(size=11),
+                        text_color=C["muted"],
+                        fg_color=C["amber"], hover_color="#b45309",
+                        checkmark_color="#000000",
+                        command=self._apply_safe_mode).pack(side="right", padx=16)
+
+        # ── Scroll-Bereich ────────────────────────────────────────────────────
         scroll = ctk.CTkScrollableFrame(parent, fg_color=C["surface"])
         scroll.pack(fill="both", expand=True, padx=8, pady=8)
         scroll.columnconfigure(1, weight=0)
@@ -1323,6 +1426,7 @@ class BotLauncher(ctk.CTk):
                              font=ctk.CTkFont(size=11), anchor="w").grid(
                     row=self._row, column=2, sticky="w", padx=10)
             self._fields[key] = e
+            self._input_widgets.append(e)
             self._row += 1
 
         def port_field(label, key):
@@ -1342,6 +1446,7 @@ class BotLauncher(ctk.CTk):
                                   font=ctk.CTkFont(size=12))
             m.grid(row=self._row, column=1, columnspan=2, sticky="w", pady=3)
             self._fields[key] = m
+            self._input_widgets.append(m)
             self._row += 1
 
         def toggle_field(label, key):
@@ -1353,6 +1458,7 @@ class BotLauncher(ctk.CTk):
                                onvalue=True, offvalue=False)
             sw.grid(row=self._row, column=1, sticky="w", pady=3)
             self._fields[key] = var
+            self._input_widgets.append(sw)
             self._row += 1
 
         section("IB Verbindung")
@@ -1382,15 +1488,29 @@ class BotLauncher(ctk.CTk):
         section("Automation")
         toggle_field("Auto-Trade — Orders automatisch platzieren", "auto_trade")
 
-        ctk.CTkButton(
-            scroll, text="  SPEICHERN  ", height=42,
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        btn_row.grid(row=self._row, column=0, columnspan=3,
+                     sticky="w", padx=6, pady=(20, 4))
+        self._row += 1
+
+        self._save_btn = ctk.CTkButton(
+            btn_row, text="  SPEICHERN  ", height=42,
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color=C["accent"], hover_color="#009e78",
             text_color="#000000", corner_radius=8,
-            command=self._save_settings).grid(
-            row=self._row, column=0, columnspan=3,
-            sticky="w", padx=6, pady=(20, 4))
-        self._row += 1
+            command=self._save_settings)
+        self._save_btn.pack(side="left", padx=(0, 8))
+        self._input_widgets.append(self._save_btn)
+
+        self._reset_btn = ctk.CTkButton(
+            btn_row, text="↩  Standardwerte", height=42,
+            font=ctk.CTkFont(size=12),
+            fg_color=C["surface"], hover_color=C["border"],
+            text_color=C["muted"], corner_radius=8,
+            command=self._reset_to_defaults)
+        self._reset_btn.pack(side="left")
+        self._input_widgets.append(self._reset_btn)
 
         self._save_lbl = ctk.CTkLabel(scroll, text="",
                                       font=ctk.CTkFont(size=12))
@@ -1436,17 +1556,13 @@ class BotLauncher(ctk.CTk):
         self._update_bar.configure(height=0)
 
     def _check_for_updates(self):
-        """Hintergrund-Thread: prüft GitHub und lädt Update automatisch herunter.
-        Schreibt Dateien nach Application Support (immer beschreibbar)."""
+        """Hintergrund-Thread: prüft GitHub auf neue Version."""
         if "DEIN_USERNAME" in UPDATE_BASE_URL:
             return
-        errors = []
         try:
-            # Sofort anzeigen dass geprüft wird
             self.after(0, lambda: self._update_bar_set(
                 "  🔄  Prüfe auf Updates...", "#7dd3fc"))
 
-            # 1. Version prüfen
             req = urllib.request.Request(
                 f"{UPDATE_BASE_URL}/version.txt",
                 headers={"User-Agent": "BotLauncher"})
@@ -1459,51 +1575,73 @@ class BotLauncher(ctk.CTk):
                 self.after(4000, lambda: self.after(0, self._update_bar_hide))
                 return
 
-            # 2. Update gefunden → Dateien einzeln herunterladen mit Fortschritt
-            total = len(UPDATE_FILES)
-            for idx, filename in enumerate(UPDATE_FILES):
-                prog = idx / total
-                self.after(0, lambda t=f"  ⬇️  Update v{remote}  ({filename})", p=prog:
-                           self._update_bar_set(t, "#7dd3fc", progress=p))
-                try:
-                    r2 = urllib.request.Request(
-                        f"{UPDATE_BASE_URL}/{filename}",
-                        headers={"User-Agent": "BotLauncher"})
-                    with urllib.request.urlopen(r2, timeout=15, context=_ssl_context()) as resp:
-                        content = resp.read()
-                    dest = os.path.join(_BASE, filename)
-                    if os.path.exists(dest):
-                        shutil.copy2(dest, dest + ".bak")
-                    with open(dest, "wb") as f:
-                        f.write(content)
-                    # macOS Quarantäne-Flag entfernen (verhindert Gatekeeper-Probleme)
-                    if sys.platform == "darwin":
-                        try:
-                            subprocess.run(
-                                ["xattr", "-d", "com.apple.quarantine", dest],
-                                capture_output=True, check=False)
-                        except Exception:
-                            pass
-                except Exception as e:
-                    errors.append(f"{filename}: {e}")
-
-            # 3. Ergebnis anzeigen
-            if errors:
-                err_msg = errors[0]
-                self.after(0, lambda: self._update_bar_set(
-                    f"  ❌  Download fehlgeschlagen: {err_msg}", "#f87171"))
-                self.after(10000, lambda: self.after(0, self._update_bar_hide))
+            # Update gefunden — auto-download oder Dialog?
+            prefs = _load_prefs()
+            if prefs.get("auto_update"):
+                self._download_update(remote)   # bereits im BG-Thread
             else:
-                self.after(0, lambda: self._update_bar_set(
-                    f"  ✅  Update v{remote} installiert — startet neu...",
-                    "#4ade80", progress=1.0))
-                self.after(2500, lambda: self.after(0, self._restart_app))
+                self.after(0, lambda r=remote: self._show_update_dialog(r))
 
         except Exception as e:
             err_str = str(e)
             self.after(0, lambda: self._update_bar_set(
                 f"  ❌  Update-Prüfung fehlgeschlagen: {err_str}", "#f87171"))
             self.after(10000, lambda: self.after(0, self._update_bar_hide))
+
+    def _show_update_dialog(self, remote: str):
+        """Zeigt Update-Dialog (Main-Thread). Startet Download wenn bestätigt."""
+        self._update_bar_hide()
+
+        def on_result(do_update: bool, always_auto: bool):
+            if always_auto:
+                prefs = _load_prefs()
+                prefs["auto_update"] = True
+                _save_prefs(prefs)
+            if do_update:
+                threading.Thread(
+                    target=self._download_update, args=(remote,), daemon=True).start()
+
+        UpdateDialog(self, VERSION, remote, on_result)
+
+    def _download_update(self, remote: str):
+        """Lädt Update-Dateien herunter (Hintergrund-Thread)."""
+        errors = []
+        total = len(UPDATE_FILES)
+        for idx, filename in enumerate(UPDATE_FILES):
+            prog = idx / total
+            self.after(0, lambda t=f"  ⬇️  Update v{remote}  ({filename})", p=prog:
+                       self._update_bar_set(t, "#7dd3fc", progress=p))
+            try:
+                r2 = urllib.request.Request(
+                    f"{UPDATE_BASE_URL}/{filename}",
+                    headers={"User-Agent": "BotLauncher"})
+                with urllib.request.urlopen(r2, timeout=15, context=_ssl_context()) as resp:
+                    content = resp.read()
+                dest = os.path.join(_BASE, filename)
+                if os.path.exists(dest):
+                    shutil.copy2(dest, dest + ".bak")
+                with open(dest, "wb") as f:
+                    f.write(content)
+                if sys.platform == "darwin":
+                    try:
+                        subprocess.run(
+                            ["xattr", "-d", "com.apple.quarantine", dest],
+                            capture_output=True, check=False)
+                    except Exception:
+                        pass
+            except Exception as e:
+                errors.append(f"{filename}: {e}")
+
+        if errors:
+            err_msg = errors[0]
+            self.after(0, lambda: self._update_bar_set(
+                f"  ❌  Download fehlgeschlagen: {err_msg}", "#f87171"))
+            self.after(10000, lambda: self.after(0, self._update_bar_hide))
+        else:
+            self.after(0, lambda: self._update_bar_set(
+                f"  ✅  Update v{remote} installiert — startet neu...",
+                "#4ade80", progress=1.0))
+            self.after(2500, lambda: self.after(0, self._restart_app))
 
     # ── Bot-Steuerung ─────────────────────────────────────────────────────────
 
@@ -1529,6 +1667,51 @@ class BotLauncher(ctk.CTk):
             self.after(3000, lambda: self._save_lbl.configure(text=""))
         except ValueError as e:
             self._save_lbl.configure(text=f"❌  Fehler: {e}", text_color="#f87171")
+
+    def _apply_safe_mode(self):
+        """Sperrt oder entsperrt alle Einstellungsfelder."""
+        locked = self._safe_mode_var.get()
+        state = "disabled" if locked else "normal"
+        for w in self._input_widgets:
+            try:
+                w.configure(state=state)
+            except Exception:
+                pass
+        if locked:
+            self._safe_mode_lbl.configure(
+                text="🔒  Sicherer Modus — Einstellungen gesperrt",
+                text_color=C["amber"])
+        else:
+            self._safe_mode_lbl.configure(
+                text="🔓  Einstellungen bearbeitbar",
+                text_color=C["green"])
+
+    def _reset_to_defaults(self):
+        """Füllt alle Einstellungsfelder mit Standardwerten (ohne Speichern)."""
+        _port_options = [
+            "7497  (TWS Paper Trading)",
+            "7496  (TWS Live Trading)",
+            "4002  (IB Gateway Paper)",
+            "4001  (IB Gateway Live)",
+        ]
+        for key, widget in self._fields.items():
+            val = DEFAULT_CONFIG.get(key)
+            if val is None:
+                continue
+            if isinstance(widget, ctk.BooleanVar):
+                widget.set(bool(val))
+            elif isinstance(widget, ctk.CTkOptionMenu):
+                default = next(
+                    (o for o in _port_options if o.startswith(str(val))),
+                    _port_options[0])
+                widget.set(default)
+            else:
+                widget.delete(0, "end")
+                widget.insert(0, str(val))
+        self._save_lbl.configure(
+            text="↩  Standardwerte geladen — klicke SPEICHERN zum Übernehmen",
+            text_color=C["amber"])
+        self.after(4000, lambda: self._save_lbl.configure(text=""))
 
     def _check_tws(self) -> bool:
         """Prüft ob TWS / IB Gateway auf dem konfigurierten Port erreichbar ist."""
