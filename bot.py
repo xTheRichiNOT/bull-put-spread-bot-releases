@@ -11,7 +11,9 @@ from zoneinfo import ZoneInfo
 
 # Writable base dir: next to .exe/.app when bundled, next to bot.py in dev
 if getattr(sys, 'frozen', False):
-    _BASE = os.path.dirname(sys.executable)
+    _exec_dir  = os.path.dirname(sys.executable)
+    _resources = os.path.join(os.path.dirname(_exec_dir), "Resources")
+    _BASE = _resources if os.path.isdir(_resources) else _exec_dir
 else:
     _BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -876,19 +878,19 @@ async def run_bot(stop_event: threading.Event = None):
         # Gespeicherten State vom letzten Lauf laden (heute gecancelte Symbole sperren)
         _load_state()
 
-        # Bestehende offene Orders von IB laden — verhindert Duplikate nach Neustart
+        # Bestehende offene Options-Orders von IB laden — verhindert Duplikate nach Neustart
         open_orders = await ib.reqAllOpenOrdersAsync()
         pre_loaded  = 0
         for o in open_orders:
             sym = o.contract.symbol
-            if sym in WATCHLIST and sym not in _bot_trades:
+            if sym in WATCHLIST and sym not in _bot_trades and o.contract.secType == 'OPT':
                 _bot_trades[sym] = {'status': 'open', 'entry_per_share': o.order.lmtPrice,
                                     'at_breakeven': False}
                 pre_loaded += 1
-        # Bestehende Positionen für Watchlist-Symbole ebenfalls sperren
+        # Bestehende Options-Positionen sperren (keine Aktien/Shares)
         for p in ib.positions():
             sym = p.contract.symbol
-            if sym in WATCHLIST and sym not in _bot_trades:
+            if sym in WATCHLIST and sym not in _bot_trades and p.contract.secType == 'OPT':
                 _bot_trades[sym] = {'status': 'open', 'entry_per_share': 0,
                                     'at_breakeven': False}
                 pre_loaded += 1

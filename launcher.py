@@ -15,7 +15,9 @@ import urllib.request
 from datetime import datetime
 
 if getattr(sys, 'frozen', False):
-    _BASE = os.path.dirname(sys.executable)
+    _exec_dir   = os.path.dirname(sys.executable)
+    _resources  = os.path.join(os.path.dirname(_exec_dir), "Resources")
+    _BASE = _resources if os.path.isdir(_resources) else _exec_dir
 else:
     _BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH  = os.path.join(_BASE, "config.json")
