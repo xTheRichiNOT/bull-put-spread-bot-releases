@@ -91,6 +91,11 @@ UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.20": [
+        "🆕  Portfolio-Tab: alle drei Bereiche per Mauziehen vergrößerbar/verkleinerbar",
+        "🆕  Chart-Bereich standardmäßig größer als die Tabelle darunter",
+        "✅  Chart passt sich automatisch an wenn Bereich gezogen wird",
+    ],
     "1.0.19": [
         "✅  Credit und TP-Ziel in offenen Positionen jetzt als Gesamtbetrag ($92 statt $0.92)",
         "✅  Sidebar-Logo: Icon aus icon.png, 'SPREAD BOT' nicht mehr abgeschnitten",
@@ -1083,8 +1088,18 @@ class BotLauncher(ctk.CTk):
         self._current_period = "Gesamt"
         self._period_btn_refs: dict[str, ctk.CTkButton] = {}
 
-        # ── 1. Offene Positionen (Live) ───────────────────────────────────────
-        pos_bar = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=8)
+        # ── PanedWindow: alle drei Bereiche per Maus verschiebbar ────────────
+        self._portfolio_paned = tk.PanedWindow(
+            parent, orient=tk.VERTICAL,
+            bg=C["border"], sashwidth=6, sashrelief="flat",
+            sashpad=0, bd=0, showhandle=False)
+        self._portfolio_paned.pack(fill="both", expand=True)
+
+        # ── Pane 1: Offene Positionen ─────────────────────────────────────────
+        pane_pos = tk.Frame(self._portfolio_paned, bg=C["bg"])
+        self._portfolio_paned.add(pane_pos, minsize=80)
+
+        pos_bar = ctk.CTkFrame(pane_pos, fg_color=C["surface2"], corner_radius=8)
         pos_bar.pack(fill="x", padx=10, pady=(10, 0))
         ctk.CTkLabel(pos_bar, text="  OFFENE POSITIONEN",
                      font=ctk.CTkFont(size=11, weight="bold"),
@@ -1094,7 +1109,7 @@ class BotLauncher(ctk.CTk):
                                            text_color=C["muted"])
         self._pos_time_lbl.pack(side="right", padx=10)
 
-        pos_cols = ctk.CTkFrame(parent, fg_color=C["header"], corner_radius=0)
+        pos_cols = ctk.CTkFrame(pane_pos, fg_color=C["header"], corner_radius=0)
         pos_cols.pack(fill="x", padx=10, pady=(2, 0))
         for col, w in [("Symbol", 70), ("Expiry", 90), ("DTE", 45),
                        ("Short", 65), ("Long", 65),
@@ -1104,13 +1119,16 @@ class BotLauncher(ctk.CTk):
                          text_color=C["muted"]).pack(side="left", padx=3, pady=4)
 
         self._pos_scroll = ctk.CTkScrollableFrame(
-            parent, fg_color=C["bg"], corner_radius=0, height=110,
+            pane_pos, fg_color=C["bg"], corner_radius=0,
             border_width=1, border_color=C["border"])
-        self._pos_scroll.pack(fill="x", padx=10, pady=(0, 8))
+        self._pos_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 8))
 
-        # ── 2. Performance + Chart ────────────────────────────────────────────
-        perf = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=8)
-        perf.pack(fill="x", padx=10, pady=(0, 6))
+        # ── Pane 2: Performance + Chart ───────────────────────────────────────
+        pane_chart = tk.Frame(self._portfolio_paned, bg=C["bg"])
+        self._portfolio_paned.add(pane_chart, minsize=100)
+
+        perf = ctk.CTkFrame(pane_chart, fg_color=C["surface2"], corner_radius=8)
+        perf.pack(fill="both", expand=True, padx=10, pady=(0, 6))
 
         period_row = ctk.CTkFrame(perf, fg_color="transparent")
         period_row.pack(fill="x", padx=8, pady=(8, 4))
@@ -1154,12 +1172,16 @@ class BotLauncher(ctk.CTk):
                                            text_color=C["muted"])
         self._lbl_avg.pack(side="left")
 
-        self._chart_canvas = tk.Canvas(perf, height=95,
-                                        bg=C["bg"], highlightthickness=0)
-        self._chart_canvas.pack(fill="x", padx=8, pady=(2, 8))
+        self._chart_canvas = tk.Canvas(perf, bg=C["bg"], highlightthickness=0)
+        self._chart_canvas.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+        self._chart_canvas.bind("<Configure>", lambda e: self._draw_chart(
+            getattr(self, '_last_chart_trades', [])))
 
-        # ── 3. Trade-Tabelle ──────────────────────────────────────────────────
-        hist_hdr = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=0)
+        # ── Pane 3: Trade-Tabelle ─────────────────────────────────────────────
+        pane_hist = tk.Frame(self._portfolio_paned, bg=C["bg"])
+        self._portfolio_paned.add(pane_hist, minsize=60)
+
+        hist_hdr = ctk.CTkFrame(pane_hist, fg_color=C["surface2"], corner_radius=0)
         hist_hdr.pack(fill="x", padx=10, pady=(0, 0))
         for col, w in [("Datum", 130), ("Symbol", 70), ("Expiry", 90),
                        ("Short", 65), ("Long", 65),
@@ -1169,9 +1191,19 @@ class BotLauncher(ctk.CTk):
                          text_color=C["accent"]).pack(side="left", padx=3, pady=6)
 
         self._history_scroll = ctk.CTkScrollableFrame(
-            parent, fg_color=C["bg"], corner_radius=0,
+            pane_hist, fg_color=C["bg"], corner_radius=0,
             border_width=1, border_color=C["border"])
         self._history_scroll.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Initiale Sash-Positionen: Positionen 22%, Chart 43%, Tabelle 35%
+        def _init_sash():
+            h = self._portfolio_paned.winfo_height()
+            if h > 50:
+                self._portfolio_paned.sash_place(0, 0, int(h * 0.22))
+                self._portfolio_paned.sash_place(1, 0, int(h * 0.65))
+            else:
+                self.after(100, _init_sash)
+        self.after(300, _init_sash)
 
         self._refresh_history()
         self._refresh_positions()
@@ -1208,6 +1240,7 @@ class BotLauncher(ctk.CTk):
 
     def _draw_chart(self, trades: list):
         import tkinter as tk
+        self._last_chart_trades = trades
         c = self._chart_canvas
         c.update_idletasks()
         w = c.winfo_width() or 500
