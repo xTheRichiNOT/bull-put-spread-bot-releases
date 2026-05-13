@@ -1,6 +1,23 @@
 """
 Bull Put Spread Bot — GUI Launcher
 """
+# ── Self-update Bootstrap (nur im frozen .app) ────────────────────────────────
+# Prüft ob eine heruntergeladene launcher.py in Resources liegt und führt
+# diese aus statt der eingebackenen Version. Ermöglicht UI-Updates via GitHub.
+import os as _os, sys as _sys
+if getattr(_sys, 'frozen', False) and '--bootstrap' not in _sys.argv:
+    _e = _os.path.dirname(_sys.executable)
+    _r = _os.path.join(_os.path.dirname(_e), "Resources")
+    _b = _r if _os.path.isdir(_r) else _e
+    _custom = _os.path.join(_b, "launcher.py")
+    if _os.path.exists(_custom):
+        _sys.argv.append('--bootstrap')
+        with open(_custom, encoding='utf-8') as _lf:
+            exec(compile(_lf.read(), _custom, 'exec'),
+                 {'__file__': _custom, '__name__': '__main__', '__spec__': None})
+        raise SystemExit(0)
+# ─────────────────────────────────────────────────────────────────────────────
+
 import customtkinter as ctk
 import threading
 import asyncio
@@ -30,9 +47,8 @@ VERSION_FILE = os.path.join(_BASE, "version.txt")
 VERSION         = open(VERSION_FILE).read().strip() if os.path.exists(VERSION_FILE) else "1.0.0"
 UPDATE_BASE_URL = "https://raw.githubusercontent.com/xTheRichiNOT/bull-put-spread-bot-releases/main"
 
-# Dateien die beim Update heruntergeladen werden
-UPDATE_FILES = ["bot.py", "version.txt", "requirements.txt"]
-# launcher.py wird separat behandelt (läuft gerade) → wird als launcher.py.new gespeichert
+# Alle Dateien die beim Auto-Update heruntergeladen werden (inkl. launcher.py)
+UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 # ────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
@@ -857,9 +873,8 @@ class BotLauncher(ctk.CTk):
                 self.after(6000, lambda: self.after(0, self._update_bar_hide))
             else:
                 self.after(0, lambda: self._update_bar_set(
-                    f"  ✅  Aktualisiert auf v{remote} — nächster Bot-Start nutzt neue Version",
-                    "#4ade80"))
-                self.after(5000, lambda: self.after(0, self._update_bar_hide))
+                    f"  ✅  Aktualisiert auf v{remote} — App startet neu...", "#4ade80"))
+                self.after(2500, lambda: self.after(0, self._restart_app))
 
         except Exception:
             pass  # kein Internet oder Repo nicht erreichbar
@@ -1029,6 +1044,17 @@ class BotLauncher(ctk.CTk):
         self._log.configure(state="disabled")
         self._log_lines = 0
         self._log_count_lbl.configure(text="")
+
+    def _restart_app(self):
+        """Startet die App neu — lädt dabei ggf. die neue launcher.py."""
+        if self._running:
+            self._stop_bot()
+        try:
+            import subprocess
+            subprocess.Popen([sys.executable] + [a for a in sys.argv if a != '--bootstrap'])
+        except Exception:
+            pass
+        self.destroy()
 
     def on_closing(self):
         if self._running:

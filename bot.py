@@ -2,6 +2,7 @@ import math
 import asyncio
 import os
 import sys
+import json
 import queue
 import random
 import logging
@@ -217,7 +218,33 @@ _iv_memory: dict = {}
 # Speichert aktive Bot-Trades für Exit-Monitoring
 _bot_trades: dict = {}
 
-_STATE_FILE = os.path.join(_BASE, '.bot_state.json')
+_STATE_FILE   = os.path.join(_BASE, '.bot_state.json')
+_HISTORY_FILE = os.path.join(_BASE, 'trade_history.json')
+
+def _append_history(symbol: str, info: dict, exit_per_share: float = 0.0):
+    """Hängt einen abgeschlossenen Trade an trade_history.json an."""
+    try:
+        history = []
+        if os.path.exists(_HISTORY_FILE):
+            with open(_HISTORY_FILE) as f:
+                history = json.load(f)
+        entry = info.get('entry_per_share', 0.0)
+        pnl   = round((entry - exit_per_share) * 100, 2)
+        history.append({
+            'symbol':          symbol,
+            'expiry':          info.get('expiry_yf', ''),
+            'short_strike':    info.get('short_strike', 0),
+            'long_strike':     info.get('long_strike', 0),
+            'entry_per_share': round(entry, 2),
+            'exit_per_share':  round(exit_per_share, 2),
+            'pnl':             pnl,
+            'status':          info.get('status', 'done'),
+            'closed_at':       datetime.now().strftime('%Y-%m-%d %H:%M'),
+        })
+        with open(_HISTORY_FILE, 'w') as f:
+            json.dump(history, f, indent=2)
+    except Exception:
+        pass
 
 def _load_state():
     """Lädt aktive Spread-Positionen vom letzten Lauf — verhindert Duplikate nach Neustart.
@@ -276,11 +303,12 @@ def _on_order_status(trade):
         _save_state()
     elif status == 'Filled':
         if _bot_trades[sym].get('status') == 'closing':
+            exit_fill = abs(trade.orderStatus.avgFillPrice or 0)
             _bot_trades[sym]['status'] = 'done'
+            _append_history(sym, _bot_trades[sym], exit_per_share=exit_fill)
             log(f"  ✅ [{sym}] Exit-Order gefüllt — Position geschlossen")
         else:
             _bot_trades[sym]['status'] = 'open'
-            # Fill-Preis überschreibt Limit-Preis für korrekte P&L-Berechnung
             fill = trade.orderStatus.avgFillPrice
             if fill and fill > 0:
                 _bot_trades[sym]['entry_per_share'] = abs(fill)
