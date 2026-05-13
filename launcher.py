@@ -999,7 +999,9 @@ class BotLauncher(ctk.CTk):
                 remote = r.read().decode().strip()
 
             if remote == VERSION:
-                self.after(0, self._update_bar_hide)
+                self.after(0, lambda: self._update_bar_set(
+                    f"  ✅  v{VERSION} — Aktuell", "#4ade80"))
+                self.after(4000, lambda: self.after(0, self._update_bar_hide))
                 return
 
             # 2. Update gefunden → Dateien einzeln herunterladen mit Fortschritt
