@@ -220,6 +220,20 @@ def is_market_open() -> bool:
     close_t = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
     return open_t <= now_et < close_t
 
+def seconds_until_market_open() -> int:
+    """Sekunden bis zur nächsten NYSE-Öffnung (09:30 ET, Mo–Fr)."""
+    now_et = datetime.now(ZoneInfo('America/New_York'))
+    candidate = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    days_ahead = 0
+    while True:
+        check = (now_et + timedelta(days=days_ahead)).replace(
+            hour=9, minute=30, second=0, microsecond=0)
+        if check.weekday() < 5 and check > now_et:
+            candidate = check
+            break
+        days_ahead += 1
+    return max(60, int((candidate - now_et).total_seconds()))
+
 # Speichert IV vom letzten Scan pro Symbol — für Spike-Erkennung
 _iv_memory: dict = {}
 # Speichert aktive Bot-Trades für Exit-Monitoring
@@ -995,12 +1009,19 @@ async def run_bot(stop_event: threading.Event = None):
             await monitor_exits(ib)
 
             if not market_open:
+                wait_sec = seconds_until_market_open()
+                open_et  = datetime.now(ZoneInfo('America/New_York')) + timedelta(seconds=wait_sec)
+                h, rem   = divmod(wait_sec, 3600)
+                m        = rem // 60
                 log(f"  ⏸️  Außerhalb NYSE-Handelszeiten (09:30–16:00 ET) — kein Scan, kein Trade")
-                log(f"  Pause {SCAN_INTERVALL}s ...")
-                for _ in range(SCAN_INTERVALL):
+                log(f"  💤  Markt öffnet in {h}h {m}min  (ET {open_et.strftime('%a %H:%M')})  — Bot schläft")
+                slept = 0
+                while slept < wait_sec:
                     if stop_event and stop_event.is_set():
                         break
-                    await asyncio.sleep(1)
+                    chunk = min(30, wait_sec - slept)
+                    await asyncio.sleep(chunk)
+                    slept += chunk
                 continue
 
             # ── Phase 1: Alle Symbole parallel scannen ───────────────────────
