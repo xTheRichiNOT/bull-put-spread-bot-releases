@@ -91,6 +91,10 @@ UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.19": [
+        "✅  Credit und TP-Ziel in offenen Positionen jetzt als Gesamtbetrag ($92 statt $0.92)",
+        "✅  Sidebar-Logo: Icon aus icon.png, 'SPREAD BOT' nicht mehr abgeschnitten",
+    ],
     "1.0.18": [
         "🆕  Offene Positionen: neue Spalte 'Akt. P&L' zeigt unrealisierten Gewinn/Verlust",
         "✅  Zeitraum-Button 'Alle' umbenannt in 'Gesamt'",
@@ -850,14 +854,31 @@ class BotLauncher(ctk.CTk):
         sb.pack_propagate(False)
 
         # Logo
-        logo = ctk.CTkFrame(sb, fg_color="transparent", height=70)
+        logo = ctk.CTkFrame(sb, fg_color="transparent", height=82)
         logo.pack(fill="x", pady=(0, 4))
         logo.pack_propagate(False)
-        ctk.CTkLabel(logo, text="⬡",
-                     font=ctk.CTkFont(size=26),
-                     text_color=C["accent"]).pack(side="left", padx=(14, 6), pady=18)
+
+        # Icon: echtes icon.png laden (Fallback: Text-Symbol)
+        _icon_lbl_kwargs: dict = {"text": "⬡",
+                                  "font": ctk.CTkFont(size=26),
+                                  "text_color": C["accent"]}
+        try:
+            from PIL import Image
+            _icon_path = os.path.join(_BASE, "icons", "icon.png")
+            if not os.path.exists(_icon_path):
+                _icon_path = os.path.join(_BUNDLE_BASE, "icons", "icon.png")
+            if os.path.exists(_icon_path):
+                _img = ctk.CTkImage(
+                    light_image=Image.open(_icon_path),
+                    dark_image=Image.open(_icon_path),
+                    size=(38, 38))
+                _icon_lbl_kwargs = {"text": "", "image": _img}
+        except Exception:
+            pass
+        ctk.CTkLabel(logo, **_icon_lbl_kwargs).pack(side="left", padx=(12, 8), pady=20)
+
         ttl = ctk.CTkFrame(logo, fg_color="transparent")
-        ttl.pack(side="left", pady=16)
+        ttl.pack(side="left", pady=18)
         ctk.CTkLabel(ttl, text="BULL PUT",
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=C["text"]).pack(anchor="w")
@@ -1319,8 +1340,8 @@ class BotLauncher(ctk.CTk):
             lbl(row, f"{dte}d", 45, dte_col)
             lbl(row, f"${p.get('short_strike', 0):.0f}", 65)
             lbl(row, f"${p.get('long_strike', 0):.0f}", 65)
-            lbl(row, f"${p.get('entry_per_share', 0):.2f}", 70, "#4ade80")
-            lbl(row, f"${p.get('tp_target', 0):.2f}", 70, "#60a5fa")
+            lbl(row, f"${p.get('entry_per_share', 0)*100:.0f}", 70, "#4ade80")
+            lbl(row, f"${p.get('tp_target', 0)*100:.0f}", 70, "#60a5fa")
             upnl = p.get("unrealized_pnl")
             if upnl is not None:
                 upnl_col = "#4ade80" if upnl >= 0 else "#ef4444"
