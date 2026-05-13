@@ -1,13 +1,22 @@
 import math
 import asyncio
 import os
+import sys
+import queue
 import random
 import logging
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+# Writable base dir: next to .exe/.app when bundled, next to bot.py in dev
+if getattr(sys, 'frozen', False):
+    _BASE = os.path.dirname(sys.executable)
+else:
+    _BASE = os.path.dirname(os.path.abspath(__file__))
+
 # Load .env file automatically (no extra dependencies needed)
-_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+_env_path = os.path.join(_BASE, '.env')
 if os.path.exists(_env_path):
     with open(_env_path) as _f:
         for _line in _f:
@@ -18,7 +27,7 @@ if os.path.exists(_env_path):
 
 # ── Config laden (config.json) ───────────────────────────────────────────────
 import json as _json
-_cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+_cfg_path = os.path.join(_BASE, 'config.json')
 _cfg_defaults = {
     "ib_host": "127.0.0.1", "ib_port": 7497, "ib_account": "",
     "min_vola": 0.28, "abstand_y": 0.10, "min_credit": 70,
@@ -38,7 +47,7 @@ else:
 # ────────────────────────────────────────────────────────────────────────────
 
 # ── Logging: Terminal + trades.log ──────────────────────────────────────────
-_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trades.log')
+_log_path = os.path.join(_BASE, 'trades.log')
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s  %(message)s',
@@ -50,8 +59,14 @@ logging.basicConfig(
 )
 # ib_insync produziert massenhaft position/updatePortfolio Logs — nur Fehler zeigen
 logging.getLogger('ib_insync').setLevel(logging.ERROR)
+_log_queue: queue.Queue = queue.Queue()
+
 def log(msg: str):
     logging.info(msg)
+    try:
+        _log_queue.put_nowait(msg + '\n')
+    except Exception:
+        pass
 # ────────────────────────────────────────────────────────────────────────────
 
 MIN_AVAILABLE_FUNDS = int(_cfg['min_available_funds'])
@@ -200,7 +215,7 @@ _iv_memory: dict = {}
 # Speichert aktive Bot-Trades für Exit-Monitoring
 _bot_trades: dict = {}
 
-_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.bot_state.json')
+_STATE_FILE = os.path.join(_BASE, '.bot_state.json')
 
 def _load_state():
     """Lädt aktive Spread-Positionen vom letzten Lauf — verhindert Duplikate nach Neustart.
@@ -218,7 +233,7 @@ def _load_state():
                 _bot_trades[sym] = info
                 loaded += 1
         if loaded:
-            print(f"   {loaded} aktive Spread-Position(en) aus State-File geladen")
+            log(f"   {loaded} aktive Spread-Position(en) aus State-File geladen")
     except Exception:
         pass
 
@@ -233,6 +248,19 @@ def _save_state():
             json.dump(data, f)
     except Exception:
         pass
+
+def _cancel_order_by_id(ib, order_id: int, symbol: str, label: str):
+    """Storniert eine offene IBKR-Order anhand ihrer ID."""
+    if not order_id:
+        return
+    try:
+        for t in ib.openTrades():
+            if t.order.orderId == order_id:
+                ib.cancelOrder(t.order)
+                log(f"  🗑  [{symbol}] {label}-Order #{order_id} storniert")
+                return
+    except Exception as e:
+        log(f"  ⚠️  [{symbol}] Konnte {label}-Order #{order_id} nicht stornieren: {e}")
 
 def _on_order_status(trade):
     """IBKR Event-Handler: aktualisiert _bot_trades wenn Order gecancelt oder gefüllt wird."""
@@ -286,16 +314,26 @@ async def get_market_data(symbol):
     def _fetch():
         import yfinance as yf
         ticker = yf.Ticker(symbol)
-        price = ticker.fast_info['last_price']
+        # fast_info kann bei manchen yfinance-Versionen mit _dividends-Bug crashen
+        try:
+            price = ticker.fast_info['last_price']
+        except Exception:
+            hist = ticker.history(period='1d')
+            price = float(hist['Close'].iloc[-1]) if not hist.empty else None
         if not price or price != price:
             return None, None
         expirations = ticker.options
         if not expirations:
             return price, None
         today = datetime.now()
-        valid = [e for e in expirations
-                 if MIN_DTE <= (datetime.strptime(e, '%Y-%m-%d') - today).days <= MAX_DTE]
-        expiry = valid[0] if valid else expirations[0]
+        dte_map = [(e, (datetime.strptime(e, '%Y-%m-%d') - today).days) for e in expirations]
+        valid = [e for e, d in dte_map if MIN_DTE <= d <= MAX_DTE]
+        if not valid:
+            # Fallback: Expiry am nächsten an MIN_DTE, mindestens 14 DTE (verhindert 0-IV Weeklies)
+            candidates = [(e, d) for e, d in dte_map if d >= 14]
+            expiry = min(candidates, key=lambda x: abs(x[1] - MIN_DTE))[0] if candidates else expirations[-1]
+        else:
+            expiry = valid[0]
         puts = ticker.option_chain(expiry).puts
         if puts.empty:
             return price, None
@@ -305,7 +343,7 @@ async def get_market_data(symbol):
     try:
         return await asyncio.to_thread(_fetch)
     except Exception as e:
-        print(f"   [{symbol}] ❌ yfinance Fehler: {e}")
+        log(f"   [{symbol}] ❌ yfinance Fehler: {e}")
         return None, None
 
 async def check_news_trigger(symbol):
@@ -422,7 +460,7 @@ async def fetch_signal(symbol, preis, iv):
             'score':         score,
         }
     except Exception as e:
-        print(f"   [{symbol}] ❌ fetch_signal Fehler: {e}")
+        log(f"   [{symbol}] ❌ fetch_signal Fehler: {e}")
         return None
 
 def count_bot_orders():
@@ -490,8 +528,13 @@ async def get_spread_value(symbol, expiry_yf, short_strike, long_strike, ib=None
         return None
 
 async def close_spread(ib, symbol, info, reason):
-    """Platziert eine Exit-Order für einen bestehenden Spread."""
+    """Storniert bestehende Bracket-Orders und platziert einen manuellen Exit (DTE-Exit)."""
     try:
+        # Bestehende Bracket TP/SL stornieren damit keine doppelten Exit-Orders entstehen
+        if ib is not None:
+            _cancel_order_by_id(ib, info.get('tp_order_id', 0), symbol, 'TP')
+            _cancel_order_by_id(ib, info.get('sl_order_id', 0), symbol, 'SL')
+
         bag = Bag(
             symbol=symbol, exchange='SMART', currency='USD',
             comboLegs=[
@@ -502,37 +545,21 @@ async def close_spread(ib, symbol, info, reason):
         entry = info['entry_per_share']
         info['status'] = 'closing'
 
-        if reason == 'TAKE_PROFIT':
-            close_limit = round(entry * (1 - TAKE_PROFIT_PCT), 2)
-            icon, label = '✅', f'TAKE PROFIT @ ${close_limit:.2f} (${close_limit*100:.0f} Debit)'
-            order = LimitOrder('BUY', 1, close_limit, tif='GTC')
-        elif reason == 'DTE_EXIT':
-            # Weicher Exit: Midprice GTC — kein Overpay, füllt wenn Markt kommt
-            close_limit = round(entry * 0.60, 2)
-            icon, label = '⏰', f'21-DTE-EXIT (soft) @ ${close_limit:.2f} GTC — wartet auf Füllung'
-            order = LimitOrder('BUY', 1, close_limit, tif='GTC')
-        elif reason == 'BREAKEVEN':
-            close_limit = round(entry * 1.05, 2)
-            icon, label = '🔒', f'BREAKEVEN STOP @ ${close_limit:.2f}'
-            order = LimitOrder('BUY', 1, close_limit, tif='GTC')
-        else:
-            # Stop Loss → aggressives Limit (3× Entry) wirkt wie Market Order,
-            # umgeht IBKR-Beschränkung für Market Orders auf Combo-Spreads
-            close_limit = round(entry * STOP_LOSS_MULT * 3.0, 2)
-            icon, label = '🛑', f'STOP LOSS ~MARKET @ max ${close_limit:.2f}'
-            order = LimitOrder('BUY', 1, close_limit, tif='DAY')  # DAY = heute noch füllen
+        # Weicher Exit: 60% des Entry-Credits als Limit — GTC wartet auf Füllung
+        close_limit = round(entry * 0.60, 2)
+        icon, label = '⏰', f'21-DTE-EXIT (soft) @ ${close_limit:.2f} GTC'
+        order = LimitOrder('BUY', 1, close_limit, tif='GTC')
 
         order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
         order.account = _cfg.get('ib_account', '')
         trade = ib.placeOrder(bag, order)
         log(f"  {icon} [{symbol}] EXIT {label} | Order ID: {trade.order.orderId}")
     except Exception as e:
-        log(f"  ❌ [{symbol}] Exit-Fehler: {e}")
         import traceback
-        traceback.print_exc()
+        log(f"  ❌ [{symbol}] Exit-Fehler: {e}\n{traceback.format_exc()}")
 
 async def monitor_exits(ib=None):
-    """Prüft alle aktiven Bot-Trades auf Take-Profit, Stop-Loss und Breakeven."""
+    """DTE-Exit und Breakeven-Update. TP/SL werden von IBKR-Bracket-Orders verwaltet."""
     if not _bot_trades:
         return
     for symbol, info in list(_bot_trades.items()):
@@ -556,47 +583,48 @@ async def monitor_exits(ib=None):
                     log(f"  ✅ [{symbol}] 21-DTE erreicht — Puffer {puffer:.1%} > {BUFFER_MIN_PCT:.0%} "
                         f"— tief OTM, verfallen lassen")
 
+        # P&L abrufen für Logging und Breakeven-Management
         current = await get_spread_value(
             symbol, info['expiry_yf'], info['short_strike'], info['long_strike'], ib
         )
         if current is None:
             continue
 
-        entry    = info['entry_per_share']
-        pnl_share = entry - current          # positiv = Gewinn
+        entry      = info['entry_per_share']
+        pnl_share  = entry - current
         pnl_dollar = pnl_share * 100
+        pnl_pct    = (pnl_share / entry * 100) if entry > 0 else 0
 
-        # Breakeven-Stop: falls bereits aktiv und Position dreht ins Minus
-        if info.get('at_breakeven') and pnl_share < 0:
-            log(f"  🔒 [{symbol}] Breakeven-Stop ausgelöst (P&L: ${pnl_dollar:+.0f})")
-            await close_spread(ib, symbol, info, 'BREAKEVEN')
-            continue
-
-        # Take Profit
-        if pnl_share >= entry * TAKE_PROFIT_PCT:
-            log(f"  ✅ [{symbol}] Take-Profit ausgelöst (P&L: +${pnl_dollar:.0f})")
-            await close_spread(ib, symbol, info, 'TAKE_PROFIT')
-
-        # Stop Loss
-        elif pnl_share <= -(entry * STOP_LOSS_MULT):
-            log(f"  🛑 [{symbol}] Stop-Loss ausgelöst (P&L: ${pnl_dollar:+.0f})")
-            await close_spread(ib, symbol, info, 'STOP_LOSS')
-
-        # Breakeven aktivieren
-        elif pnl_share >= entry * BREAKEVEN_TRIGGER_PCT and not info.get('at_breakeven'):
+        # Breakeven: alten SL stornieren und durch Breakeven-Order ersetzen
+        if pnl_share >= entry * BREAKEVEN_TRIGGER_PCT and not info.get('at_breakeven'):
             info['at_breakeven'] = True
-            log(f"  🔒 [{symbol}] Stop auf Breakeven gesetzt (P&L: +${pnl_dollar:.0f})")
+            _cancel_order_by_id(ib, info.get('sl_order_id', 0), symbol, 'SL')
+            be_close = round(entry * 1.02, 2)  # entry + 2% Puffer für Slippage
+            be_bag = Bag(
+                symbol=symbol, exchange='SMART', currency='USD',
+                comboLegs=[
+                    ComboLeg(conId=info['short_conid'], ratio=1, action='BUY',  exchange='SMART'),
+                    ComboLeg(conId=info['long_conid'],  ratio=1, action='SELL', exchange='SMART'),
+                ]
+            )
+            be_order = LimitOrder('BUY', 1, be_close, tif='GTC')
+            be_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
+            be_order.account = _cfg.get('ib_account', '')
+            be_trade = ib.placeOrder(be_bag, be_order)
+            info['sl_order_id'] = be_trade.order.orderId
+            _save_state()
+            log(f"  🔒 [{symbol}] Breakeven-SL @ ${be_close:.2f} GTC gesetzt "
+                f"(ID: {be_trade.order.orderId}) | P&L: +${pnl_dollar:.0f}")
 
-        else:
-            pnl_pct     = (pnl_share / entry * 100) if entry > 0 else 0
-            tp_pct      = TAKE_PROFIT_PCT * 100
-            sl_pct      = STOP_LOSS_MULT  * 100
-            be_pct      = BREAKEVEN_TRIGGER_PCT * 100
-            arrow       = '📈' if pnl_pct >= 0 else '📉'
-            be_flag     = '  🔒 Breakeven aktiv' if info.get('at_breakeven') else f'  (BE bei +{be_pct:.0f}%)'
-            print(f"  {arrow} [{symbol}] {pnl_pct:+.1f}% (${pnl_dollar:+.0f})"
-                  f"  |  TP: +{tp_pct:.0f}%  SL: -{sl_pct:.0f}%{be_flag}"
-                  f"  |  Entry ${entry*100:.0f} → jetzt ${current*100:.0f}")
+        # P&L Logging
+        be_pct  = BREAKEVEN_TRIGGER_PCT * 100
+        tp_pct  = TAKE_PROFIT_PCT * 100
+        sl_pct  = STOP_LOSS_MULT  * 100
+        arrow   = '📈' if pnl_pct >= 0 else '📉'
+        be_flag = '  🔒 Breakeven aktiv' if info.get('at_breakeven') else f'  (BE bei +{be_pct:.0f}%)'
+        log(f"  {arrow} [{symbol}] {pnl_pct:+.1f}% (${pnl_dollar:+.0f})"
+            f"  |  TP: +{tp_pct:.0f}%  SL: -{sl_pct:.0f}%{be_flag}"
+            f"  |  Entry ${entry*100:.0f} → jetzt ${current*100:.0f}")
 
 async def place_order(ib, sig):
     """Platziert eine Combo-Order auf IB für ein gegebenes Signal-Dict."""
@@ -753,45 +781,76 @@ async def place_order(ib, sig):
             'long_conid':      long_contract.conId,
             'status':          'open',
             'at_breakeven':    False,
+            'tp_order_id':     0,
+            'sl_order_id':     0,
         }
 
-        # BUY + negativer Preis = Credit empfangen = Bull Put Spread
-        # SELL-Convention wird von IBKR Paper Trading mit Error 201 abgelehnt
-        # TWS zeigt die Order als "Bear-Put" an, aber die Wirtschaftlichkeit ist korrekt (Credit empfangen, -$fill)
-        order = LimitOrder('BUY', 1, -limit_price, tif='GTC')
-        order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
-        order.account = _cfg.get('ib_account', '')
-        trade = ib.placeOrder(bag, order)
-        log(f"  ✅ [{sym}] Order platziert! "
-              f"ID: {trade.order.orderId} | "
-              f"Limit: -${limit_price:.2f} | Markt: ${ibkr_net:.2f} (${market_credit:.0f}) | R/R: {market_rr:.2f}x")
+        # ── Bracket-Order: Entry + TP + SL, alle GTC ─────────────────────────
+        # Preise
+        tp_close = max(round(limit_price * (1 - TAKE_PROFIT_PCT), 2), 0.01)
+        sl_close = round(limit_price * STOP_LOSS_MULT, 2)
+
+        # Entry: negativer Preis = Credit empfangen (IBKR-Konvention für Combo-Spreads)
+        # transmit=False → Order geht zu TWS aber wird noch nicht weitergeleitet
+        entry_order = LimitOrder('BUY', 1, -limit_price, tif='GTC')
+        entry_order.transmit = False
+        entry_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
+        entry_order.account = _cfg.get('ib_account', '')
+        entry_trade = ib.placeOrder(bag, entry_order)
+        parent_id = entry_trade.order.orderId
+
+        # Take-Profit: positiver Preis = Debit bezahlen zum Schließen
+        # parentId verknüpft mit Entry — IBKR storniert SL automatisch wenn TP füllt
+        tp_order = LimitOrder('BUY', 1, tp_close, tif='GTC')
+        tp_order.parentId = parent_id
+        tp_order.transmit = False
+        tp_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
+        tp_order.account = _cfg.get('ib_account', '')
+        tp_trade = ib.placeOrder(bag, tp_order)
+
+        # Stop-Loss: transmit=True übermittelt alle drei Orders gleichzeitig an die Börse
+        sl_order = LimitOrder('BUY', 1, sl_close, tif='GTC')
+        sl_order.parentId = parent_id
+        sl_order.transmit = True
+        sl_order.smartComboRoutingParams = [TagValue('NonGuaranteed', '1')]
+        sl_order.account = _cfg.get('ib_account', '')
+        sl_trade = ib.placeOrder(bag, sl_order)
+
+        # IDs für spätere Stornierung (DTE-Exit, Breakeven-Update) speichern
+        _bot_trades[sym]['tp_order_id'] = tp_trade.order.orderId
+        _bot_trades[sym]['sl_order_id'] = sl_trade.order.orderId
+        _save_state()
+
+        log(f"  ✅ [{sym}] Bracket-Order platziert (alle GTC)!")
+        log(f"     Entry  #{parent_id}:  -${limit_price:.2f}  (Credit ${market_credit:.0f})  R/R: {market_rr:.2f}x")
+        log(f"     TP     #{tp_trade.order.orderId}:  +${tp_close:.2f}  (+{TAKE_PROFIT_PCT:.0%} = +${tp_close*100:.0f})")
+        log(f"     SL     #{sl_trade.order.orderId}:  +${sl_close:.2f}  (-{STOP_LOSS_MULT:.0%} = -${sl_close*100:.0f})")
     except Exception as e:
-        log(f"  ❌ [{sym}] Order-Fehler: {e}")
         import traceback
-        traceback.print_exc()
+        log(f"  ❌ [{sym}] Order-Fehler: {e}\n{traceback.format_exc()}")
 
 def print_ranking(signals, selected):
     """Zeigt eine Ranking-Tabelle aller Signale dieses Zyklus."""
     selected_symbols = {s['symbol'] for s in selected}
-    print(f"\n{'─'*108}")
-    print(f"  {'#':<3} {'Symbol':<6} {'IV':>6} {'Kurs':>8} {'Strike':>12} "
-          f"{'Credit':>8} {'R/R':>6} {'P(Win)':>7} {'P(MaxL)':>8} {'EV':>7} {'Score':>7}  Status")
-    print(f"{'─'*116}")
+    log(f"\n{'─'*108}")
+    log(f"  {'#':<3} {'Symbol':<6} {'IV':>6} {'Kurs':>8} {'Strike':>12} "
+        f"{'Credit':>8} {'R/R':>6} {'P(Win)':>7} {'P(MaxL)':>8} {'EV':>7} {'Score':>7}  Status")
+    log(f"{'─'*116}")
     for i, s in enumerate(signals, 1):
         status  = "→ TRADE" if s['symbol'] in selected_symbols else "  skip"
         triggers = ', '.join(s.get('triggers', []))
-        print(f"  {i:<3} {s['symbol']:<6} {s['iv']:>6.1%} {s['preis']:>8.2f} "
-              f"  {s['short_strike']:>5.0f}P/{s['long_strike']:>4.0f}P "
-              f"  ${s['credit']:>6.2f}"
-              f"  {s['risk_reward']:>5.2f}x  {s.get('prob_otm', 0):>6.1%}  {s.get('prob_max_loss', 0):>7.1%}"
-              f"  {s.get('ev', 0):>+6.2f}$  {s['score']:>6.3f}  {status}")
+        log(f"  {i:<3} {s['symbol']:<6} {s['iv']:>6.1%} {s['preis']:>8.2f} "
+            f"  {s['short_strike']:>5.0f}P/{s['long_strike']:>4.0f}P "
+            f"  ${s['credit']:>6.2f}"
+            f"  {s['risk_reward']:>5.2f}x  {s.get('prob_otm', 0):>6.1%}  {s.get('prob_max_loss', 0):>7.1%}"
+            f"  {s.get('ev', 0):>+6.2f}$  {s['score']:>6.3f}  {status}")
         if triggers:
-            print(f"       ↳ {triggers}")
-    print(f"{'─'*108}")
+            log(f"       ↳ {triggers}")
+    log(f"{'─'*108}")
 
-async def run_bot():
+async def run_bot(stop_event: threading.Event = None):
     ib = IB()
-    print("🤖 Master-Bot startet... Verbinde zur TWS (Port 7497)")
+    log(f"🤖 Master-Bot startet... Verbinde zur IB (Port {_cfg.get('ib_port', 7497)})")
 
     try:
         client_id = random.randint(10, 999)
@@ -800,7 +859,7 @@ async def run_bot():
             int(_cfg.get('ib_port', 7497)),
             clientId=client_id,
         )
-        print("✅ Verbunden mit TWS (nur für Order-Placement)")
+        log("✅ Verbunden mit IB (nur für Order-Placement)")
 
         # Verzögerte Marktdaten aktivieren (Typ 3) — kein Echtzeit-Abo nötig
         ib.reqMarketDataType(3)
@@ -834,33 +893,37 @@ async def run_bot():
                                     'at_breakeven': False}
                 pre_loaded += 1
         if pre_loaded:
-            print(f"   {pre_loaded} bestehende Order(s)/Position(en) aus IB geladen — werden nicht dupliziert")
-        print()
+            log(f"   {pre_loaded} bestehende Order(s)/Position(en) aus IB geladen — werden nicht dupliziert")
+        log("")
     except TimeoutError:
-        print("❌ Verbindung zu TWS fehlgeschlagen (Timeout auf Port 7497).")
-        print("   → TWS/IB Gateway läuft?")
-        print("   → API aktiviert? (Edit → Global Configuration → API → Enable Socket Clients)")
-        print("   → Port korrekt? Paper=7497, Live=7496, Gateway-Paper=4002, Gateway-Live=4001")
+        port = _cfg.get('ib_port', 7497)
+        log(f"❌ Verbindung fehlgeschlagen (Timeout auf Port {port}).")
+        log("   → TWS/IB Gateway läuft?")
+        log("   → API aktiviert? (Edit → Global Configuration → API → Enable Socket Clients)")
+        log("   → Port korrekt? Paper=7497, Live=7496, Gateway-Paper=4002, Gateway-Live=4001")
         ib.disconnect()
         return
 
     try:
-        while True:
+        while not (stop_event and stop_event.is_set()):
             market_open = is_market_open()
             now_et = datetime.now(ZoneInfo('America/New_York'))
-            print(f"\n{'═'*72}")
-            print(f"  ZYKLUS  {datetime.now().strftime('%H:%M:%S')}"
-                  f"  (NYSE: {'🟢 OFFEN' if market_open else '🔴 GESCHLOSSEN'}"
-                  f"  ET {now_et.strftime('%H:%M')})")
-            print(f"{'═'*72}")
+            log(f"\n{'═'*72}")
+            log(f"  ZYKLUS  {datetime.now().strftime('%H:%M:%S')}"
+                f"  (NYSE: {'🟢 OFFEN' if market_open else '🔴 GESCHLOSSEN'}"
+                f"  ET {now_et.strftime('%H:%M')})")
+            log(f"{'═'*72}")
 
             # ── Exit-Monitoring läuft immer — auch außerhalb der Handelszeiten ──
             await monitor_exits(ib)
 
             if not market_open:
-                print(f"  ⏸️  Außerhalb NYSE-Handelszeiten (09:30–16:00 ET) — kein Scan, kein Trade")
-                print(f"  Pause {SCAN_INTERVALL}s ...")
-                await asyncio.sleep(SCAN_INTERVALL)
+                log(f"  ⏸️  Außerhalb NYSE-Handelszeiten (09:30–16:00 ET) — kein Scan, kein Trade")
+                log(f"  Pause {SCAN_INTERVALL}s ...")
+                for _ in range(SCAN_INTERVALL):
+                    if stop_event and stop_event.is_set():
+                        break
+                    await asyncio.sleep(1)
                 continue
 
             # ── Phase 1: Alle Symbole parallel scannen ───────────────────────
@@ -870,10 +933,10 @@ async def run_bot():
                 async with _sem:
                     preis, iv = await get_market_data(symbol)
                 if preis is None:
-                    print(f"   [{symbol}] ⏳ Keine Preisdaten")
+                    log(f"   [{symbol}] ⏳ Keine Preisdaten")
                     return None
                 if iv is None:
-                    print(f"   [{symbol}] ⏳ Kein IV — überspringe")
+                    log(f"   [{symbol}] ⏳ Kein IV — überspringe")
                     return None
 
                 prev_iv    = _iv_memory.get(symbol)
@@ -885,12 +948,12 @@ async def run_bot():
                     news_hit, headline = await check_news_trigger(symbol)
 
                 if iv <= MIN_VOLA:
-                    print(f"   [{symbol}] ✗  IV={iv:.1%} (unter {MIN_VOLA:.1%})")
+                    log(f"   [{symbol}] ✗  IV={iv:.1%} (unter {MIN_VOLA:.1%})")
                     return None
 
                 if not first_scan and not iv_spike and not news_hit:
                     delta = f"Δ={iv - prev_iv:+.1%}"
-                    print(f"   [{symbol}] –  IV={iv:.1%} stabil ({delta}, kein Spike ≥{MIN_IV_SPIKE:.0%}, keine News)")
+                    log(f"   [{symbol}] –  IV={iv:.1%} stabil ({delta}, kein Spike ≥{MIN_IV_SPIKE:.0%}, keine News)")
                     return None
 
                 trigger_reasons = []
@@ -901,7 +964,7 @@ async def run_bot():
                 if news_hit:
                     trigger_reasons.append(f"News: \"{headline[:60]}\"")
 
-                print(f"   [{symbol}] 🔔 TRIGGER: {' | '.join(trigger_reasons)} | IV={iv:.1%} ${preis:.2f}")
+                log(f"   [{symbol}] 🔔 TRIGGER: {' | '.join(trigger_reasons)} | IV={iv:.1%} ${preis:.2f}")
 
                 async with _sem:
                     sig = await fetch_signal(symbol, preis, iv)
@@ -915,7 +978,7 @@ async def run_bot():
             all_signals = [s for s in results if s is not None]
             elapsed = (datetime.now() - t0).seconds
             scanned = len([r for r in results if r is not None or r is None])
-            print(f"\n   Scan abgeschlossen in {elapsed}s | {len(WATCHLIST)} Symbole gescannt | {len(all_signals)} Signale über IV-Filter")
+            log(f"\n   Scan abgeschlossen in {elapsed}s | {len(WATCHLIST)} Symbole gescannt | {len(all_signals)} Signale über IV-Filter")
 
             # ── Phase 2: Signale filtern und ranken ───────────────────────────
             qualified = [
@@ -1004,13 +1067,13 @@ async def run_bot():
                         reasons.append(f"EV {s.get('ev', 0):+.2f}$ negativer Erwartungswert")
                     log(f"  ✗ [{s['symbol']}] blockiert: {', '.join(reasons)}")
             else:
-                print("\n  Keine Signale in diesem Zyklus.")
+                log("\n  Keine Signale in diesem Zyklus.")
 
             if best_rr:
-                print(f"  Bestes R/R: {best_rr:.2f}x | {len(tradeable)} Signale qualifiziert")
+                log(f"  Bestes R/R: {best_rr:.2f}x | {len(tradeable)} Signale qualifiziert")
 
             if not AUTO_TRADE:
-                print("  [AUTO_TRADE aus — nur Anzeige]")
+                log("  [AUTO_TRADE aus — nur Anzeige]")
             elif slots <= 0:
                 log(f"  ⏸️  Bot-Limit erreicht ({open_count}/{MAX_POSITIONS} Orders diese Session) — kein neuer Trade")
             elif not tradeable:
@@ -1018,18 +1081,21 @@ async def run_bot():
 
             # ── Phase 4: Orders platzieren ────────────────────────────────────
             for sig in selected:
-                print(f"\n  🚀 Trade: {sig['symbol']} | Score {sig['score']:.3f}")
+                log(f"\n  🚀 Trade: {sig['symbol']} | Score {sig['score']:.3f}")
                 await place_order(ib, sig)
 
-            print(f"\n  Pause {SCAN_INTERVALL}s ...")
-            await asyncio.sleep(SCAN_INTERVALL)
+            log(f"\n  Pause {SCAN_INTERVALL}s ...")
+            for _ in range(SCAN_INTERVALL):
+                if stop_event and stop_event.is_set():
+                    break
+                await asyncio.sleep(1)
 
     except Exception as e:
-        print(f"KRITISCHER FEHLER: {e}")
         import traceback
-        traceback.print_exc()
+        log(f"KRITISCHER FEHLER: {e}\n{traceback.format_exc()}")
     finally:
         ib.disconnect()
+        log("🔌 IB-Verbindung getrennt.")
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
