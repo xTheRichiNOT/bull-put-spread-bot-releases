@@ -31,6 +31,7 @@ import asyncio
 import queue as queue_module
 import json
 import socket
+import ssl
 import subprocess
 import sys
 import os
@@ -38,6 +39,16 @@ import platform
 import shutil
 import urllib.request
 from datetime import datetime
+
+
+def _ssl_context():
+    """SSL-Kontext mit certifi-Zertifikaten. Fallback: unverified (nie crashen)."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl._create_unverified_context()  # noqa: S501
+        return ctx
 
 # ── Pfade ─────────────────────────────────────────────────────────────────────
 # _BASE       = beschreibbares Verzeichnis (Application Support / Quellordner)
@@ -984,7 +995,7 @@ class BotLauncher(ctk.CTk):
             req = urllib.request.Request(
                 f"{UPDATE_BASE_URL}/version.txt",
                 headers={"User-Agent": "BotLauncher"})
-            with urllib.request.urlopen(req, timeout=8) as r:
+            with urllib.request.urlopen(req, timeout=8, context=_ssl_context()) as r:
                 remote = r.read().decode().strip()
 
             if remote == VERSION:
@@ -1001,7 +1012,7 @@ class BotLauncher(ctk.CTk):
                     r2 = urllib.request.Request(
                         f"{UPDATE_BASE_URL}/{filename}",
                         headers={"User-Agent": "BotLauncher"})
-                    with urllib.request.urlopen(r2, timeout=15) as resp:
+                    with urllib.request.urlopen(r2, timeout=15, context=_ssl_context()) as resp:
                         content = resp.read()
                     dest = os.path.join(_BASE, filename)
                     if os.path.exists(dest):
