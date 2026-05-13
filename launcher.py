@@ -91,6 +91,13 @@ UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.15": [
+        "🆕  Sidebar-Navigation (Dashboard / Portfolio / Einstellungen / IB-Setup)",
+        "🆕  4 Metric-Cards: Broker-Status, Kapital, Positionen, Gesamt P&L",
+        "🆕  Live Broker-Status in Sidebar (Verbunden / Getrennt / Verbinde...)",
+        "🆕  Verfügbare Mittel werden direkt aus Bot-Log extrahiert und angezeigt",
+        "✅  Bot-Status-Karte in Sidebar aktualisiert sich bei Start/Stop",
+    ],
     "1.0.14": [
         "🆕  Live-Ticker: Offene Positionen mit DTE, Credit, TP-Ziel, Status",
         "🆕  Zeitraum-Filter: 1W / 1M / 3M / 6M / Alle",
@@ -732,88 +739,162 @@ class BotLauncher(ctk.CTk):
     # ── UI ───────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # ── Accent-Linie ganz oben ────────────────────────────────────────────
-        accent_line = ctk.CTkFrame(self, height=2, corner_radius=0,
-                                   fg_color=C["accent"])
-        accent_line.pack(fill="x")
+        # ── Accent-Linie (ganz oben) ──────────────────────────────────────────
+        ctk.CTkFrame(self, height=3, corner_radius=0,
+                     fg_color=C["accent"]).pack(fill="x")
 
-        # ── Header ───────────────────────────────────────────────────────────
-        self._hdr = ctk.CTkFrame(self, height=62, corner_radius=0,
-                                 fg_color=C["header"])
-        self._hdr.pack(fill="x")
-        self._hdr.pack_propagate(False)
-
-        # Logo-Bereich
-        logo_frame = ctk.CTkFrame(self._hdr, fg_color="transparent")
-        logo_frame.pack(side="left", padx=(16, 0))
-
-        ctk.CTkLabel(logo_frame, text="⬡",
-                     font=ctk.CTkFont(size=22),
-                     text_color=C["accent"]).pack(side="left", padx=(0, 8))
-
-        ctk.CTkLabel(logo_frame, text="BULL PUT SPREAD",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["text"]).pack(side="left")
-
-        ctk.CTkLabel(logo_frame, text="BOT",
-                     font=ctk.CTkFont(size=15, weight="bold"),
-                     text_color=C["accent"]).pack(side="left", padx=(4, 0))
-
-        # Version badge
-        ver_badge = ctk.CTkFrame(logo_frame, fg_color=C["surface2"],
-                                 corner_radius=4)
-        ver_badge.pack(side="left", padx=(12, 0))
-        ctk.CTkLabel(ver_badge, text=f" v{VERSION} ",
-                     font=ctk.CTkFont(size=10),
-                     text_color=C["muted"]).pack(pady=2)
-
-        # Rechte Seite: Uptime + Status
-        right = ctk.CTkFrame(self._hdr, fg_color="transparent")
-        right.pack(side="right", padx=16)
-
-        self._uptime_lbl = ctk.CTkLabel(right, text="",
-                                         font=ctk.CTkFont(family="Courier", size=11),
-                                         text_color=C["muted"])
-        self._uptime_lbl.pack(side="left", padx=(0, 16))
-
-        self._status_dot = ctk.CTkLabel(right, text="⏹  GESTOPPT",
-                                        font=ctk.CTkFont(size=12, weight="bold"),
-                                        text_color=C["red"])
-        self._status_dot.pack(side="left")
-
-        # ── Update banner (hidden until update found) ─────────────────────
+        # ── Update-Banner (versteckt bis Update gefunden) ─────────────────────
         self._update_bar = ctk.CTkFrame(self, height=0, corner_radius=0,
                                         fg_color=("#0c2340", "#0c2340"))
         self._update_bar.pack(fill="x")
         self._update_bar.pack_propagate(False)
 
-        # ── Tabs ─────────────────────────────────────────────────────────────
-        tabs = ctk.CTkTabview(self, anchor="nw",
-                              fg_color=C["surface"],
-                              segmented_button_fg_color=C["header"],
-                              segmented_button_selected_color=C["surface2"],
-                              segmented_button_selected_hover_color=C["surface2"],
-                              segmented_button_unselected_color=C["header"],
-                              segmented_button_unselected_hover_color=C["surface"])
-        tabs.pack(fill="both", expand=True, padx=10, pady=(6, 10))
-        tabs.add("  Dashboard  ")
-        tabs.add("  Historie  ")
-        tabs.add("  Einstellungen  ")
-        tabs.add("  IB-Setup Guide  ")
+        # ── Haupt-Layout: Sidebar links, Content rechts ───────────────────────
+        main = ctk.CTkFrame(self, fg_color=C["bg"], corner_radius=0)
+        main.pack(fill="both", expand=True)
 
-        self._build_dashboard(tabs.tab("  Dashboard  "))
-        self._build_history(tabs.tab("  Historie  "))
-        self._build_settings(tabs.tab("  Einstellungen  "))
-        self._build_guide(tabs.tab("  IB-Setup Guide  "))
+        # ── SIDEBAR ───────────────────────────────────────────────────────────
+        sb = ctk.CTkFrame(main, width=200, corner_radius=0,
+                          fg_color=C["header"])
+        sb.pack(side="left", fill="y")
+        sb.pack_propagate(False)
+
+        # Logo
+        logo = ctk.CTkFrame(sb, fg_color="transparent", height=70)
+        logo.pack(fill="x", pady=(0, 4))
+        logo.pack_propagate(False)
+        ctk.CTkLabel(logo, text="⬡",
+                     font=ctk.CTkFont(size=26),
+                     text_color=C["accent"]).pack(side="left", padx=(14, 6), pady=18)
+        ttl = ctk.CTkFrame(logo, fg_color="transparent")
+        ttl.pack(side="left", pady=16)
+        ctk.CTkLabel(ttl, text="BULL PUT",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w")
+        ctk.CTkLabel(ttl, text="SPREAD BOT",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=C["accent"]).pack(anchor="w")
+
+        ctk.CTkFrame(sb, height=1, corner_radius=0,
+                     fg_color=C["border"]).pack(fill="x", padx=12, pady=(0, 8))
+
+        # Bot-Status-Karte
+        self._sb_status_card = ctk.CTkFrame(sb, fg_color=C["surface2"],
+                                             corner_radius=10)
+        self._sb_status_card.pack(fill="x", padx=12, pady=(0, 10))
+        self._sb_bot_lbl = ctk.CTkLabel(
+            self._sb_status_card,
+            text="⏹  BOT GESTOPPT",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=C["red"])
+        self._sb_bot_lbl.pack(pady=(8, 2))
+        self._uptime_lbl = ctk.CTkLabel(
+            self._sb_status_card, text="",
+            font=ctk.CTkFont(family="Courier", size=10),
+            text_color=C["muted"])
+        self._uptime_lbl.pack(pady=(0, 8))
+
+        # Broker-Status-Karte
+        self._sb_broker_card = ctk.CTkFrame(sb, fg_color=C["surface2"],
+                                             corner_radius=10)
+        self._sb_broker_card.pack(fill="x", padx=12, pady=(0, 12))
+        self._sb_broker_lbl = ctk.CTkLabel(
+            self._sb_broker_card,
+            text="⚫  Broker: —",
+            font=ctk.CTkFont(size=11),
+            text_color=C["muted"])
+        self._sb_broker_lbl.pack(pady=(8, 2))
+        self._sb_funds_lbl = ctk.CTkLabel(
+            self._sb_broker_card, text="",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=C["text"])
+        self._sb_funds_lbl.pack(pady=(0, 8))
+
+        ctk.CTkFrame(sb, height=1, corner_radius=0,
+                     fg_color=C["border"]).pack(fill="x", padx=12, pady=(0, 8))
+
+        # Navigation
+        self._pages: dict[str, ctk.CTkFrame] = {}
+        self._nav_btns: dict[str, ctk.CTkButton] = {}
+        nav_items = [
+            ("  📊   Dashboard",  "dashboard"),
+            ("  📁   Portfolio",  "history"),
+            ("  ⚙️   Einstellungen", "settings"),
+            ("  📖   IB-Setup",   "guide"),
+        ]
+        for label, key in nav_items:
+            btn = ctk.CTkButton(
+                sb, text=label, height=42, anchor="w",
+                font=ctk.CTkFont(size=13),
+                fg_color="transparent", hover_color=C["surface2"],
+                text_color=C["muted"], corner_radius=8,
+                command=lambda k=key: self._show_page(k))
+            btn.pack(fill="x", padx=8, pady=2)
+            self._nav_btns[key] = btn
+
+        # Version am Seitenleisten-Fuß
+        ctk.CTkLabel(sb, text=f"v{VERSION}",
+                     font=ctk.CTkFont(size=10),
+                     text_color=C["border"]).pack(side="bottom", pady=10)
+
+        # ── CONTENT-BEREICH ───────────────────────────────────────────────────
+        content = ctk.CTkFrame(main, fg_color=C["bg"], corner_radius=0)
+        content.pack(side="left", fill="both", expand=True)
+
+        for key in ["dashboard", "history", "settings", "guide"]:
+            f = ctk.CTkFrame(content, fg_color=C["surface"], corner_radius=0)
+            self._pages[key] = f
+
+        self._build_dashboard(self._pages["dashboard"])
+        self._build_history(self._pages["history"])
+        self._build_settings(self._pages["settings"])
+        self._build_guide(self._pages["guide"])
+
+        # Status-dot Compat (bleibt für interne Logik)
+        self._status_dot = self._sb_bot_lbl
+
+        self._show_page("dashboard")
+
+    def _show_page(self, key: str):
+        for k, frame in self._pages.items():
+            frame.pack_forget()
+        self._pages[key].pack(fill="both", expand=True)
+        for k, btn in self._nav_btns.items():
+            active = k == key
+            btn.configure(
+                fg_color=C["surface2"] if active else "transparent",
+                text_color=C["accent"] if active else C["muted"],
+                font=ctk.CTkFont(size=13, weight="bold" if active else "normal"))
 
     # ── Dashboard tab ────────────────────────────────────────────────────────
 
     def _build_dashboard(self, parent):
         parent.configure(fg_color=C["surface"])
 
+        # ── Metric Cards ──────────────────────────────────────────────────────
+        cards_row = ctk.CTkFrame(parent, fg_color="transparent")
+        cards_row.pack(fill="x", padx=10, pady=(10, 6))
+
+        def make_card(parent, title, icon):
+            card = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=10)
+            card.pack(side="left", fill="both", expand=True, padx=4)
+            ctk.CTkLabel(card, text=f"{icon}  {title}",
+                         font=ctk.CTkFont(size=9, weight="bold"),
+                         text_color=C["muted"]).pack(anchor="w", padx=10, pady=(8, 0))
+            val_lbl = ctk.CTkLabel(card, text="—",
+                                   font=ctk.CTkFont(size=16, weight="bold"),
+                                   text_color=C["text"])
+            val_lbl.pack(anchor="w", padx=10, pady=(2, 8))
+            return val_lbl
+
+        self._card_broker  = make_card(cards_row, "BROKER",      "🔌")
+        self._card_funds   = make_card(cards_row, "KAPITAL",     "💰")
+        self._card_pos     = make_card(cards_row, "POSITIONEN",  "📋")
+        self._card_pnl     = make_card(cards_row, "GESAMT P&L",  "📈")
+
         # ── Steuerleiste ──────────────────────────────────────────────────────
         ctrl = ctk.CTkFrame(parent, fg_color=C["surface2"], corner_radius=10)
-        ctrl.pack(fill="x", padx=10, pady=(10, 6))
+        ctrl.pack(fill="x", padx=10, pady=(0, 6))
 
         btn_area = ctk.CTkFrame(ctrl, fg_color="transparent")
         btn_area.pack(side="left", padx=12, pady=10)
@@ -1478,7 +1559,9 @@ class BotLauncher(ctk.CTk):
         save_config(self.cfg)
         self._running     = True
         self._start_time  = datetime.now()
-        self._status_dot.configure(text="⬤  LÄUFT", text_color=C["green"])
+        self._status_dot.configure(text="⬤  BOT LÄUFT", text_color=C["green"])
+        self._sb_broker_lbl.configure(text="🟡  Broker: Verbinde...",
+                                       text_color=C["amber"])
         self._start_btn.configure(state="disabled")
         self._stop_btn.configure(
             state="normal", text_color=C["red"],
@@ -1524,9 +1607,48 @@ class BotLauncher(ctk.CTk):
                     self._on_bot_stopped()
                 else:
                     self._log_append(item)
+                    self._parse_status(item)
         except queue_module.Empty:
             pass
         self.after(100, self._poll_queue)
+
+    def _parse_status(self, text: str):
+        """Live-Status aus Log-Meldungen extrahieren und Karten aktualisieren."""
+        import re
+        # Broker-Verbindung
+        tl = text.lower()
+        if any(k in tl for k in ("verbunden", "connected", "ib-verbindung hergestellt")):
+            self._sb_broker_lbl.configure(text="🟢  Broker: Verbunden",
+                                           text_color=C["green"])
+            self._card_broker.configure(text="Verbunden", text_color=C["green"])
+        elif any(k in tl for k in ("getrennt", "disconnect", "timeout auf port",
+                                   "connection refused")):
+            self._sb_broker_lbl.configure(text="🔴  Broker: Getrennt",
+                                           text_color=C["red"])
+            self._card_broker.configure(text="Getrennt", text_color=C["red"])
+        # Verfügbare Mittel
+        m = re.search(r'Verfügbare Mittel:\s*\$([\d,]+)', text)
+        if m:
+            funds = m.group(1)
+            self._sb_funds_lbl.configure(text=f"${funds}")
+            self._card_funds.configure(text=f"${funds}", text_color=C["text"])
+        # Offene Positionen
+        m2 = re.search(r'(\d+)\s+(?:aktive|offene|bestehende).*[Pp]osition', text)
+        if m2:
+            self._card_pos.configure(text=m2.group(1), text_color=C["accent"])
+        # Gesamt P&L aus history.json aktualisieren
+        try:
+            hf = os.path.join(_BASE, "trade_history.json")
+            if os.path.exists(hf):
+                with open(hf) as f:
+                    trades = json.load(f)
+                total = sum(t.get("pnl", 0) for t in trades)
+                sign = "+" if total >= 0 else ""
+                col = "#4ade80" if total >= 0 else "#ef4444"
+                self._card_pnl.configure(
+                    text=f"{sign}${total:,.0f}", text_color=col)
+        except Exception:
+            pass
 
     def _pulse(self):
         if not self._running:
@@ -1551,7 +1673,10 @@ class BotLauncher(ctk.CTk):
         self._start_time  = None
         self._stop_event  = None
         self._bot_thread  = None
-        self._status_dot.configure(text="⏹  GESTOPPT", text_color=C["red"])
+        self._status_dot.configure(text="⏹  BOT GESTOPPT", text_color=C["red"])
+        self._sb_broker_lbl.configure(text="⚫  Broker: —", text_color=C["muted"])
+        self._sb_funds_lbl.configure(text="")
+        self._card_broker.configure(text="—", text_color=C["muted"])
         self._uptime_lbl.configure(text="")
         self._start_btn.configure(state="normal")
         self._stop_btn.configure(state="disabled")
