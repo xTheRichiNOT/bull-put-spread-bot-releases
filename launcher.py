@@ -1071,7 +1071,7 @@ class BotLauncher(ctk.CTk):
         pos_cols.pack(fill="x", padx=10, pady=(2, 0))
         for col, w in [("Symbol", 70), ("Expiry", 90), ("DTE", 45),
                        ("Short", 65), ("Long", 65),
-                       ("Credit", 70), ("TP-Ziel", 70), ("Status", 80)]:
+                       ("Credit", 70), ("TP-Ziel", 70), ("Akt. P&L", 80), ("Status", 80)]:
             ctk.CTkLabel(pos_cols, text=col, width=w,
                          font=ctk.CTkFont(size=10, weight="bold"),
                          text_color=C["muted"]).pack(side="left", padx=3, pady=4)
@@ -1315,6 +1315,13 @@ class BotLauncher(ctk.CTk):
             lbl(row, f"${p.get('long_strike', 0):.0f}", 65)
             lbl(row, f"${p.get('entry_per_share', 0):.2f}", 70, "#4ade80")
             lbl(row, f"${p.get('tp_target', 0):.2f}", 70, "#60a5fa")
+            upnl = p.get("unrealized_pnl")
+            if upnl is not None:
+                upnl_col = "#4ade80" if upnl >= 0 else "#ef4444"
+                upnl_txt = f"{'+'if upnl>=0 else ''}${upnl:,.0f}"
+            else:
+                upnl_col, upnl_txt = C["dim"], "—"
+            lbl(row, upnl_txt, 80, upnl_col)
             status_col = "#4ade80" if status == "open" else "#f59e0b"
             status_txt = "Aktiv" if status == "open" else "Schließt"
             lbl(row, status_txt, 80, status_col)
