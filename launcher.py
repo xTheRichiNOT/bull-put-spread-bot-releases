@@ -88,6 +88,36 @@ UPDATE_BASE_URL = "https://raw.githubusercontent.com/xTheRichiNOT/bull-put-sprea
 
 # Alle Dateien die beim Auto-Update heruntergeladen werden (inkl. launcher.py)
 UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
+
+# Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
+CHANGELOG: dict[str, list[str]] = {
+    "1.0.13": [
+        "🆕  Changelog-Fenster nach Updates (dieses Fenster)",
+        "✅  Aktuell-Meldung bleibt 4 Sekunden sichtbar",
+        "✅  SSL-Zertifikatsfehler behoben (certifi)",
+        "✅  Updates in Application Support (keine Schreibrechtsprobleme mehr)",
+        "✅  Config.json bleibt bei Updates erhalten",
+        "✅  Fortschrittsbalken beim Download",
+        "✅  TWS / IB Gateway Check vor Bot-Start",
+    ],
+}
+
+# Prefs (getrennt von Config — bleiben bei Reset erhalten)
+PREFS_PATH = os.path.join(_BASE, "prefs.json")
+
+def _load_prefs() -> dict:
+    try:
+        with open(PREFS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_prefs(prefs: dict):
+    try:
+        with open(PREFS_PATH, "w") as f:
+            json.dump(prefs, f, indent=2)
+    except Exception:
+        pass
 # ────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
@@ -287,6 +317,73 @@ IB_SETUP_TEXT = """
       → Abhängigkeiten nicht installiert
       → install_mac.sh bzw. install_windows.bat nochmal ausführen
 """.strip()
+
+
+class ChangelogDialog(ctk.CTkToplevel):
+    """Zeigt nach einem Auto-Update die Änderungen der neuen Version an."""
+
+    def __init__(self, parent: ctk.CTk, version: str, changes: list, on_done):
+        super().__init__(parent)
+        self.title(f"Update installiert — v{version}")
+        self.geometry("500x380")
+        self.resizable(False, False)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+        self._on_done   = on_done
+        self._no_more   = ctk.BooleanVar(value=False)
+        self._build(version, changes)
+
+    def _build(self, version: str, changes: list):
+        # Header
+        hdr = ctk.CTkFrame(self, height=54, corner_radius=0, fg_color=C["header"])
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr, text="  ⬡  BULL PUT SPREAD BOT",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=C["accent"]).pack(side="left", padx=12, pady=14)
+        ctk.CTkLabel(hdr, text=f"v{version}  ",
+                     font=ctk.CTkFont(size=12),
+                     text_color=C["muted"]).pack(side="right", pady=14)
+
+        # Titel
+        ctk.CTkLabel(self, text="Was ist neu?",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=C["text"],
+                     fg_color=C["surface2"]).pack(fill="x", padx=0, pady=0, ipady=8)
+
+        # Änderungsliste
+        scroll = ctk.CTkScrollableFrame(self, fg_color=C["surface"],
+                                        corner_radius=0)
+        scroll.pack(fill="both", expand=True, padx=0, pady=0)
+        for line in changes:
+            ctk.CTkLabel(scroll, text=f"  {line}",
+                         font=ctk.CTkFont(size=12),
+                         text_color=C["text"],
+                         anchor="w").pack(fill="x", padx=8, pady=4)
+
+        # Footer
+        foot = ctk.CTkFrame(self, height=56, corner_radius=0,
+                            fg_color=C["surface2"])
+        foot.pack(fill="x")
+        foot.pack_propagate(False)
+
+        ctk.CTkCheckBox(foot, text="In Zukunft nicht mehr anzeigen",
+                        variable=self._no_more,
+                        font=ctk.CTkFont(size=11),
+                        text_color=C["muted"],
+                        fg_color=C["accent"], hover_color="#009e78",
+                        checkmark_color="#000000").pack(side="left", padx=16, pady=16)
+
+        ctk.CTkButton(foot, text="OK  ✓", width=110, height=34,
+                      fg_color=C["accent"], hover_color="#009e78",
+                      text_color="#000000",
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=self._close).pack(side="right", padx=16, pady=10)
+
+    def _close(self):
+        self._on_done(self._no_more.get())
+        self.destroy()
 
 
 class SetupWizard(ctk.CTkToplevel):
@@ -557,6 +654,9 @@ class BotLauncher(ctk.CTk):
             # Check for updates silently in background
             threading.Thread(target=self._check_for_updates, daemon=True).start()
 
+        # Changelog nach Update anzeigen (nur einmal pro Version)
+        self.after(600, self._maybe_show_changelog)
+
     def _set_icon(self):
         try:
             from PIL import Image, ImageTk
@@ -589,6 +689,36 @@ class BotLauncher(ctk.CTk):
                 widget.delete(0, "end")
                 widget.insert(0, str(self.cfg.get(key, "")))
         threading.Thread(target=self._check_for_updates, daemon=True).start()
+
+    def _maybe_show_changelog(self):
+        """Zeigt Changelog einmal nach Update — respektiert 'nicht mehr anzeigen'."""
+        prefs = _load_prefs()
+        if prefs.get("skip_changelog"):
+            return
+        last = prefs.get("last_shown_version")
+        if last is None:
+            # Erstinstallation — Version still setzen, kein Dialog
+            prefs["last_shown_version"] = VERSION
+            _save_prefs(prefs)
+            return
+        if last == VERSION:
+            return  # Schon für diese Version angezeigt
+        changes = CHANGELOG.get(VERSION)
+        if not changes:
+            # Keine Einträge → Version trotzdem markieren
+            prefs["last_shown_version"] = VERSION
+            _save_prefs(prefs)
+            return
+        self._show_changelog(VERSION, changes)
+
+    def _show_changelog(self, version: str, changes: list):
+        def on_done(skip_future: bool):
+            prefs = _load_prefs()
+            prefs["last_shown_version"] = VERSION
+            if skip_future:
+                prefs["skip_changelog"] = True
+            _save_prefs(prefs)
+        ChangelogDialog(self, version, changes, on_done)
 
     # ── UI ───────────────────────────────────────────────────────────────────
 
