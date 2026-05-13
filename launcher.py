@@ -1388,7 +1388,7 @@ class BotLauncher(ctk.CTk):
         parent.configure(fg_color=C["surface"])
 
         # ── Sicherer-Modus Header ─────────────────────────────────────────────
-        self._safe_mode_var = ctk.BooleanVar(value=False)
+        self._safe_mode_var = ctk.BooleanVar(value=True)   # default: gesperrt
         self._input_widgets: list = []
 
         safe_bar = ctk.CTkFrame(parent, fg_color=C["surface2"],
@@ -1398,9 +1398,9 @@ class BotLauncher(ctk.CTk):
 
         self._safe_mode_lbl = ctk.CTkLabel(
             safe_bar,
-            text="🔓  Einstellungen bearbeitbar",
+            text="🔒  Sicherer Modus — Einstellungen gesperrt",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=C["green"])
+            text_color=C["amber"])
         self._safe_mode_lbl.pack(side="left", padx=14)
 
         ctk.CTkCheckBox(safe_bar, text="Sicherer Modus",
@@ -1413,9 +1413,11 @@ class BotLauncher(ctk.CTk):
 
         # ── Scroll-Bereich ────────────────────────────────────────────────────
         scroll = ctk.CTkScrollableFrame(parent, fg_color=C["surface"])
-        scroll.pack(fill="both", expand=True, padx=8, pady=8)
+        scroll.pack(fill="both", expand=True, padx=0, pady=0)
+        scroll.columnconfigure(0, weight=0)
         scroll.columnconfigure(1, weight=0)
         scroll.columnconfigure(2, weight=1)
+        self._settings_scroll = scroll   # ref für scroll-binding
 
         self._fields = {}
         self._row = 0
@@ -1540,6 +1542,27 @@ class BotLauncher(ctk.CTk):
                                       font=ctk.CTkFont(size=12))
         self._save_lbl.grid(row=self._row, column=0, columnspan=3,
                             sticky="w", padx=6)
+
+        # Initialen Zustand (gesperrt) anwenden und Scroll-Events binden
+        self.after(50, self._apply_safe_mode)
+        self.after(100, self._bind_settings_scroll)
+
+    def _bind_settings_scroll(self):
+        """Bindet Mausrad-Events an alle Kind-Widgets der Settings-ScrollFrame (macOS fix)."""
+        try:
+            canvas = self._settings_scroll._parent_canvas
+
+            def _on_scroll(e):
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+
+            def _bind_recursive(w):
+                w.bind("<MouseWheel>", _on_scroll, add="+")
+                for child in w.winfo_children():
+                    _bind_recursive(child)
+
+            _bind_recursive(self._settings_scroll)
+        except Exception:
+            pass
 
     # ── Guide tab ─────────────────────────────────────────────────────────────
 
@@ -1695,10 +1718,14 @@ class BotLauncher(ctk.CTk):
     def _apply_safe_mode(self):
         """Sperrt oder entsperrt alle Einstellungsfelder."""
         locked = self._safe_mode_var.get()
-        state = "disabled" if locked else "normal"
+        state  = "disabled" if locked else "normal"
         for w in self._input_widgets:
             try:
                 w.configure(state=state)
+                # CTkEntry explizit ausgrauen (customtkinter zeigt sonst weißen Text)
+                if isinstance(w, ctk.CTkEntry):
+                    w.configure(text_color=C["muted"] if locked else C["text"],
+                                border_color=C["border"] if locked else C["border"])
             except Exception:
                 pass
         if locked:
@@ -1709,6 +1736,8 @@ class BotLauncher(ctk.CTk):
             self._safe_mode_lbl.configure(
                 text="🔓  Einstellungen bearbeitbar",
                 text_color=C["green"])
+        # Scroll-Bindings nach Zustandswechsel erneuern
+        self.after(50, self._bind_settings_scroll)
 
     def _reset_to_defaults(self):
         """Füllt alle Einstellungsfelder mit Standardwerten (ohne Speichern)."""
