@@ -84,13 +84,16 @@ VERSION_FILE = _ver_as if os.path.exists(_ver_as) else _ver_bnd
 # Ersetze DEIN_USERNAME und DEIN_REPO mit deinen GitHub-Daten.
 # Das Repo muss öffentlich sein ODER du verwendest einen Personal Access Token.
 VERSION         = open(VERSION_FILE).read().strip() if os.path.exists(VERSION_FILE) else "1.0.0"
-UPDATE_BASE_URL = "https://raw.githubusercontent.com/xTheRichiNOT/bull-put-spread-bot-releases/main"
+UPDATE_BASE_URL = "https://raw.githubusercontent.com/xTheRichiNOT/bull-put-spread-bot/main"
 
 # Alle Dateien die beim Auto-Update heruntergeladen werden (inkl. launcher.py)
 UPDATE_FILES = ["bot.py", "launcher.py", "version.txt", "requirements.txt"]
 
 # Changelog — pro Version eine Liste mit Änderungen (wird im Update-Dialog angezeigt)
 CHANGELOG: dict[str, list[str]] = {
+    "1.0.30": [
+        "🐛  already_traded-Fix: 'cancelled'/'failed' blockieren keinen Retry mehr — Signal wird erneut gehandelt wenn kein Fill stattfand",
+    ],
     "1.0.29": [
         "🐛  P&L-Fix: IB-Daten werden nur genutzt wenn Short-Leg einen echten Bid hat — sonst yfinance",
         "🐛  Verhindert Stale-Ask ($2.13 für wertlose OTM-Option) der P&L als -$121 statt +$91 anzeigte",
